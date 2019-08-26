@@ -32,7 +32,9 @@
 #include "async_wrap-inl.h"
 #include "base_object-inl.h"
 #include "env-inl.h"
+#include "memory_tracker-inl.h"
 #include "string_bytes.h"
+#include "threadpoolwork-inl.h"
 #include "util-inl.h"
 #include "v8.h"
 
@@ -149,6 +151,8 @@ template SSL_SESSION* SSLWrap<TLSWrap>::GetSessionCallback(
     int* copy);
 template int SSLWrap<TLSWrap>::NewSessionCallback(SSL* s,
                                                   SSL_SESSION* sess);
+template void SSLWrap<TLSWrap>::KeylogCallback(const SSL* s,
+                                               const char* line);
 template void SSLWrap<TLSWrap>::OnClientHello(
     void* arg,
     const ClientHelloParser::ClientHello& hello);
@@ -939,6 +943,24 @@ static X509_STORE* NewRootCertStore() {
   }
 
   return store;
+}
+
+
+void GetRootCertificates(const FunctionCallbackInfo<Value>& args) {
+  Environment* env = Environment::GetCurrent(args);
+  Local<Array> result = Array::New(env->isolate(), arraysize(root_certs));
+
+  for (size_t i = 0; i < arraysize(root_certs); i++) {
+    Local<Value> value;
+    if (!String::NewFromOneByte(env->isolate(),
+                                reinterpret_cast<const uint8_t*>(root_certs[i]),
+                                NewStringType::kNormal).ToLocal(&value) ||
+        !result->Set(env->context(), i, value).FromMaybe(false)) {
+      return;
+    }
+  }
+
+  args.GetReturnValue().Set(result);
 }
 
 
@@ -1750,6 +1772,21 @@ int SSLWrap<Base>::NewSessionCallback(SSL* s, SSL_SESSION* sess) {
 
 
 template <class Base>
+void SSLWrap<Base>::KeylogCallback(const SSL* s, const char* line) {
+  Base* w = static_cast<Base*>(SSL_get_app_data(s));
+  Environment* env = w->ssl_env();
+  HandleScope handle_scope(env->isolate());
+  Context::Scope context_scope(env->context());
+
+  const size_t size = strlen(line);
+  Local<Value> line_bf = Buffer::Copy(env, line, 1 + size).ToLocalChecked();
+  char* data = Buffer::Data(line_bf);
+  data[size] = '\n';
+  w->MakeCallback(env->onkeylog_string(), 1, &line_bf);
+}
+
+
+template <class Base>
 void SSLWrap<Base>::OnClientHello(void* arg,
                                   const ClientHelloParser::ClientHello& hello) {
   Base* w = static_cast<Base*>(arg);
@@ -2280,11 +2317,12 @@ void SSLWrap<Base>::GetSession(const FunctionCallbackInfo<Value>& args) {
     return;
 
   int slen = i2d_SSL_SESSION(sess, nullptr);
-  CHECK_GT(slen, 0);
+  if (slen <= 0)
+    return;  // Invalid or malformed session.
 
   AllocatedBuffer sbuf = env->AllocateManaged(slen);
   unsigned char* p = reinterpret_cast<unsigned char*>(sbuf.data());
-  i2d_SSL_SESSION(sess, &p);
+  CHECK_LT(0, i2d_SSL_SESSION(sess, &p));
   args.GetReturnValue().Set(sbuf.ToBuffer().ToLocalChecked());
 }
 
@@ -3439,7 +3477,7 @@ static ManagedEVPPKey GetPublicOrPrivateKeyFromJs(
           is_public = false;
           break;
         default:
-          CHECK(!"Invalid key encoding type");
+          UNREACHABLE("Invalid key encoding type");
       }
 
       if (is_public) {
@@ -4280,8 +4318,9 @@ void CipherBase::Update(const FunctionCallbackInfo<Value>& args) {
   // Only copy the data if we have to, because it's a string
   if (args[0]->IsString()) {
     StringBytes::InlineDecoder decoder;
-    if (!decoder.Decode(env, args[0].As<String>(), args[1], UTF8)
-             .FromMaybe(false))
+    enum encoding enc = ParseEncoding(env->isolate(), args[1], UTF8);
+
+    if (decoder.Decode(env, args[0].As<String>(), enc).IsNothing())
       return;
     r = cipher->Update(decoder.out(), decoder.size(), &out);
   } else {
@@ -4464,8 +4503,9 @@ void Hmac::HmacUpdate(const FunctionCallbackInfo<Value>& args) {
   bool r = false;
   if (args[0]->IsString()) {
     StringBytes::InlineDecoder decoder;
-    if (decoder.Decode(env, args[0].As<String>(), args[1], UTF8)
-            .FromMaybe(false)) {
+    enum encoding enc = ParseEncoding(env->isolate(), args[1], UTF8);
+
+    if (!decoder.Decode(env, args[0].As<String>(), enc).IsNothing()) {
       r = hmac->HmacUpdate(decoder.out(), decoder.size());
     }
   } else {
@@ -4532,15 +4572,21 @@ void Hash::New(const FunctionCallbackInfo<Value>& args) {
 
   const node::Utf8Value hash_type(env->isolate(), args[0]);
 
+  Maybe<unsigned int> xof_md_len = Nothing<unsigned int>();
+  if (!args[1]->IsUndefined()) {
+    CHECK(args[1]->IsUint32());
+    xof_md_len = Just<unsigned int>(args[1].As<Uint32>()->Value());
+  }
+
   Hash* hash = new Hash(env, args.This());
-  if (!hash->HashInit(*hash_type)) {
+  if (!hash->HashInit(*hash_type, xof_md_len)) {
     return ThrowCryptoError(env, ERR_get_error(),
                             "Digest method not supported");
   }
 }
 
 
-bool Hash::HashInit(const char* hash_type) {
+bool Hash::HashInit(const char* hash_type, Maybe<unsigned int> xof_md_len) {
   const EVP_MD* md = EVP_get_digestbyname(hash_type);
   if (md == nullptr)
     return false;
@@ -4549,6 +4595,18 @@ bool Hash::HashInit(const char* hash_type) {
     mdctx_.reset();
     return false;
   }
+
+  md_len_ = EVP_MD_size(md);
+  if (xof_md_len.IsJust() && xof_md_len.FromJust() != md_len_) {
+    // This is a little hack to cause createHash to fail when an incorrect
+    // hashSize option was passed for a non-XOF hash function.
+    if ((EVP_MD_meth_get_flags(md) & EVP_MD_FLAG_XOF) == 0) {
+      EVPerr(EVP_F_EVP_DIGESTFINALXOF, EVP_R_NOT_XOF_OR_INVALID_LENGTH);
+      return false;
+    }
+    md_len_ = xof_md_len.FromJust();
+  }
+
   return true;
 }
 
@@ -4571,8 +4629,9 @@ void Hash::HashUpdate(const FunctionCallbackInfo<Value>& args) {
   bool r = true;
   if (args[0]->IsString()) {
     StringBytes::InlineDecoder decoder;
-    if (!decoder.Decode(env, args[0].As<String>(), args[1], UTF8)
-             .FromMaybe(false)) {
+    enum encoding enc = ParseEncoding(env->isolate(), args[1], UTF8);
+
+    if (decoder.Decode(env, args[0].As<String>(), enc).IsNothing()) {
       args.GetReturnValue().Set(false);
       return;
     }
@@ -4597,16 +4656,47 @@ void Hash::HashDigest(const FunctionCallbackInfo<Value>& args) {
     encoding = ParseEncoding(env->isolate(), args[0], BUFFER);
   }
 
-  unsigned char md_value[EVP_MAX_MD_SIZE];
-  unsigned int md_len;
+  // TODO(tniessen): SHA3_squeeze does not work for zero-length outputs on all
+  // platforms and will cause a segmentation fault if called. This workaround
+  // causes hash.digest() to correctly return an empty buffer / string.
+  // See https://github.com/openssl/openssl/issues/9431.
+  if (!hash->has_md_ && hash->md_len_ == 0) {
+    hash->has_md_ = true;
+  }
 
-  EVP_DigestFinal_ex(hash->mdctx_.get(), md_value, &md_len);
+  if (!hash->has_md_) {
+    // Some hash algorithms such as SHA3 do not support calling
+    // EVP_DigestFinal_ex more than once, however, Hash._flush
+    // and Hash.digest can both be used to retrieve the digest,
+    // so we need to cache it.
+    // See https://github.com/nodejs/node/issues/28245.
+
+    hash->md_value_ = MallocOpenSSL<unsigned char>(hash->md_len_);
+
+    size_t default_len = EVP_MD_CTX_size(hash->mdctx_.get());
+    int ret;
+    if (hash->md_len_ == default_len) {
+      ret = EVP_DigestFinal_ex(hash->mdctx_.get(), hash->md_value_,
+                               &hash->md_len_);
+    } else {
+      ret = EVP_DigestFinalXOF(hash->mdctx_.get(), hash->md_value_,
+                               hash->md_len_);
+    }
+
+    if (ret != 1) {
+      OPENSSL_free(hash->md_value_);
+      hash->md_value_ = nullptr;
+      return ThrowCryptoError(env, ERR_get_error());
+    }
+
+    hash->has_md_ = true;
+  }
 
   Local<Value> error;
   MaybeLocal<Value> rc =
       StringBytes::Encode(env->isolate(),
-                          reinterpret_cast<const char*>(md_value),
-                          md_len,
+                          reinterpret_cast<const char*>(hash->md_value_),
+                          hash->md_len_,
                           encoding,
                           &error);
   if (rc.IsEmpty()) {
@@ -4790,15 +4880,7 @@ static AllocatedBuffer Node_SignFinal(Environment* env,
   return AllocatedBuffer();
 }
 
-Sign::SignResult Sign::SignFinal(
-    const ManagedEVPPKey& pkey,
-    int padding,
-    const Maybe<int>& salt_len) {
-  if (!mdctx_)
-    return SignResult(kSignNotInitialised);
-
-  EVPMDPointer mdctx = std::move(mdctx_);
-
+static inline bool ValidateDSAParameters(EVP_PKEY* key) {
 #ifdef NODE_FIPS_MODE
   /* Validate DSA2 parameters from FIPS 186-4 */
   if (FIPS_mode() && EVP_PKEY_DSA == EVP_PKEY_base_id(pkey.get())) {
@@ -4809,22 +4891,28 @@ Sign::SignResult Sign::SignFinal(
     const BIGNUM* q;
     DSA_get0_pqg(dsa, nullptr, &q, nullptr);
     size_t N = BN_num_bits(q);
-    bool result = false;
 
-    if (L == 1024 && N == 160)
-      result = true;
-    else if (L == 2048 && N == 224)
-      result = true;
-    else if (L == 2048 && N == 256)
-      result = true;
-    else if (L == 3072 && N == 256)
-      result = true;
-
-    if (!result) {
-      return SignResult(kSignPrivateKey);
-    }
+    return (L == 1024 && N == 160) ||
+           (L == 2048 && N == 224) ||
+           (L == 2048 && N == 256) ||
+           (L == 3072 && N == 256)
   }
 #endif  // NODE_FIPS_MODE
+
+  return true;
+}
+
+Sign::SignResult Sign::SignFinal(
+    const ManagedEVPPKey& pkey,
+    int padding,
+    const Maybe<int>& salt_len) {
+  if (!mdctx_)
+    return SignResult(kSignNotInitialised);
+
+  EVPMDPointer mdctx = std::move(mdctx_);
+
+  if (!ValidateDSAParameters(pkey.get()))
+    return SignResult(kSignPrivateKey);
 
   AllocatedBuffer buffer =
       Node_SignFinal(env(), std::move(mdctx), pkey, padding, salt_len);
@@ -4876,32 +4964,8 @@ void SignOneShot(const FunctionCallbackInfo<Value>& args) {
   if (!key)
     return;
 
-#ifdef NODE_FIPS_MODE
-  /* Validate DSA2 parameters from FIPS 186-4 */
-  if (FIPS_mode() && EVP_PKEY_DSA == EVP_PKEY_base_id(key.get())) {
-    DSA* dsa = EVP_PKEY_get0_DSA(key.get());
-    const BIGNUM* p;
-    DSA_get0_pqg(dsa, &p, nullptr, nullptr);
-    size_t L = BN_num_bits(p);
-    const BIGNUM* q;
-    DSA_get0_pqg(dsa, nullptr, &q, nullptr);
-    size_t N = BN_num_bits(q);
-    bool result = false;
-
-    if (L == 1024 && N == 160)
-      result = true;
-    else if (L == 2048 && N == 224)
-      result = true;
-    else if (L == 2048 && N == 256)
-      result = true;
-    else if (L == 3072 && N == 256)
-      result = true;
-
-    if (!result) {
-      return CheckThrow(env, SignBase::Error::kSignPrivateKey);
-    }
-  }
-#endif  // NODE_FIPS_MODE
+  if (!ValidateDSAParameters(key.get()))
+    return CheckThrow(env, SignBase::Error::kSignPrivateKey);
 
   ArrayBufferViewContents<char> data(args[offset]);
 
@@ -5139,6 +5203,7 @@ template <PublicKeyCipher::Operation operation,
 bool PublicKeyCipher::Cipher(Environment* env,
                              const ManagedEVPPKey& pkey,
                              int padding,
+                             const char* oaep_hash,
                              const unsigned char* data,
                              int len,
                              AllocatedBuffer* out) {
@@ -5149,6 +5214,12 @@ bool PublicKeyCipher::Cipher(Environment* env,
     return false;
   if (EVP_PKEY_CTX_set_rsa_padding(ctx.get(), padding) <= 0)
     return false;
+
+  if (oaep_hash != nullptr) {
+    if (!EVP_PKEY_CTX_md(ctx.get(), EVP_PKEY_OP_TYPE_CRYPT,
+                         EVP_PKEY_CTRL_RSA_OAEP_MD, oaep_hash))
+      return false;
+  }
 
   size_t out_len = 0;
   if (EVP_PKEY_cipher(ctx.get(), nullptr, &out_len, data, len) <= 0)
@@ -5186,6 +5257,9 @@ void PublicKeyCipher::Cipher(const FunctionCallbackInfo<Value>& args) {
   uint32_t padding;
   if (!args[offset + 1]->Uint32Value(env->context()).To(&padding)) return;
 
+  const node::Utf8Value oaep_str(env->isolate(), args[offset + 2]);
+  const char* oaep_hash = args[offset + 2]->IsString() ? *oaep_str : nullptr;
+
   AllocatedBuffer out;
 
   ClearErrorOnReturn clear_error_on_return;
@@ -5194,6 +5268,7 @@ void PublicKeyCipher::Cipher(const FunctionCallbackInfo<Value>& args) {
       env,
       pkey,
       padding,
+      oaep_hash,
       buf.data(),
       buf.length(),
       &out);
@@ -5527,12 +5602,6 @@ void DiffieHellman::SetPublicKey(const FunctionCallbackInfo<Value>& args) {
 }
 
 void DiffieHellman::SetPrivateKey(const FunctionCallbackInfo<Value>& args) {
-#if OPENSSL_VERSION_NUMBER >= 0x10100000L && \
-    OPENSSL_VERSION_NUMBER < 0x10100070L
-// Older versions of OpenSSL 1.1.0 have a DH_set0_key which does not work for
-// Node. See https://github.com/openssl/openssl/pull/4384.
-#error "OpenSSL 1.1.0 revisions before 1.1.0g are not supported"
-#endif
   SetKey(args,
          [](DH* dh, BIGNUM* num) { return DH_set0_key(dh, nullptr, num); },
          "Private key");
@@ -5729,11 +5798,10 @@ void ECDH::SetPrivateKey(const FunctionCallbackInfo<Value>& args) {
   ASSIGN_OR_RETURN_UNWRAP(&ecdh, args.Holder());
 
   THROW_AND_RETURN_IF_NOT_BUFFER(env, args[0], "Private key");
+  ArrayBufferViewContents<unsigned char> priv_buffer(args[0]);
 
   BignumPointer priv(BN_bin2bn(
-      reinterpret_cast<unsigned char*>(Buffer::Data(args[0].As<Object>())),
-      Buffer::Length(args[0].As<Object>()),
-      nullptr));
+      priv_buffer.data(), priv_buffer.length(), nullptr));
   if (!priv)
     return env->ThrowError("Failed to convert Buffer to BN");
 
@@ -5981,7 +6049,7 @@ struct ScryptJob : public CryptoJob {
   uint32_t N;
   uint32_t r;
   uint32_t p;
-  uint32_t maxmem;
+  uint64_t maxmem;
   CryptoErrorVector errors;
 
   inline explicit ScryptJob(Environment* env) : CryptoJob(env) {}
@@ -6036,7 +6104,7 @@ void Scrypt(const FunctionCallbackInfo<Value>& args) {
   CHECK(args[3]->IsUint32());  // N
   CHECK(args[4]->IsUint32());  // r
   CHECK(args[5]->IsUint32());  // p
-  CHECK(args[6]->IsUint32());  // maxmem
+  CHECK(args[6]->IsNumber());  // maxmem
   CHECK(args[7]->IsObject() || args[7]->IsUndefined());  // wrap object
   std::unique_ptr<ScryptJob> job(new ScryptJob(env));
   job->keybuf_data = reinterpret_cast<unsigned char*>(Buffer::Data(args[0]));
@@ -6046,12 +6114,13 @@ void Scrypt(const FunctionCallbackInfo<Value>& args) {
   job->N = args[3].As<Uint32>()->Value();
   job->r = args[4].As<Uint32>()->Value();
   job->p = args[5].As<Uint32>()->Value();
-  job->maxmem = args[6].As<Uint32>()->Value();
+  Local<Context> ctx = env->isolate()->GetCurrentContext();
+  job->maxmem = static_cast<uint64_t>(args[6]->IntegerValue(ctx).ToChecked());
   if (!job->Validate()) {
     // EVP_PBE_scrypt() does not always put errors on the error stack
     // and therefore ToResult() may or may not return an exception
     // object.  Return a sentinel value to inform JS land it should
-    // throw an ERR_CRYPTO_SCRYPT_PARAMETER_ERROR on our behalf.
+    // throw an ERR_CRYPTO_SCRYPT_INVALID_PARAMETER on our behalf.
     auto result = job->ToResult();
     if (result->IsUndefined()) result = Null(args.GetIsolate());
     return args.GetReturnValue().Set(result);
@@ -6650,14 +6719,11 @@ OpenSSLBuffer ExportChallenge(const char* data, int len) {
 void ExportChallenge(const FunctionCallbackInfo<Value>& args) {
   Environment* env = Environment::GetCurrent(args);
 
-  size_t len = Buffer::Length(args[0]);
-  if (len == 0)
+  ArrayBufferViewContents<char> input(args[0]);
+  if (input.length() == 0)
     return args.GetReturnValue().SetEmptyString();
 
-  char* data = Buffer::Data(args[0]);
-  CHECK_NOT_NULL(data);
-
-  OpenSSLBuffer cert = ExportChallenge(data, len);
+  OpenSSLBuffer cert = ExportChallenge(input.data(), input.length());
   if (!cert)
     return args.GetReturnValue().SetEmptyString();
 
@@ -6712,16 +6778,13 @@ void ConvertKey(const FunctionCallbackInfo<Value>& args) {
 
 
 void TimingSafeEqual(const FunctionCallbackInfo<Value>& args) {
-  CHECK(Buffer::HasInstance(args[0]));
-  CHECK(Buffer::HasInstance(args[1]));
+  ArrayBufferViewContents<char> buf1(args[0]);
+  ArrayBufferViewContents<char> buf2(args[1]);
 
-  size_t buf_length = Buffer::Length(args[0]);
-  CHECK_EQ(buf_length, Buffer::Length(args[1]));
+  CHECK_EQ(buf1.length(), buf2.length());
 
-  const char* buf1 = Buffer::Data(args[0]);
-  const char* buf2 = Buffer::Data(args[1]);
-
-  return args.GetReturnValue().Set(CRYPTO_memcmp(buf1, buf2, buf_length) == 0);
+  return args.GetReturnValue().Set(
+      CRYPTO_memcmp(buf1.data(), buf2.data(), buf1.length()) == 0);
 }
 
 void InitCryptoOnce() {
@@ -6853,6 +6916,8 @@ void Initialize(Local<Object> target,
   env->SetMethodNoSideEffect(target, "certVerifySpkac", VerifySpkac);
   env->SetMethodNoSideEffect(target, "certExportPublicKey", ExportPublicKey);
   env->SetMethodNoSideEffect(target, "certExportChallenge", ExportChallenge);
+  env->SetMethodNoSideEffect(target, "getRootCertificates",
+                             GetRootCertificates);
   // Exposed for testing purposes only.
   env->SetMethodNoSideEffect(target, "isExtraRootCertsFileLoaded",
                              IsExtraRootCertsFileLoaded);

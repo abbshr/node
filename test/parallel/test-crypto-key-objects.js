@@ -13,6 +13,7 @@ const {
   createSecretKey,
   createPublicKey,
   createPrivateKey,
+  KeyObject,
   randomBytes,
   publicEncrypt,
   privateDecrypt
@@ -20,8 +21,8 @@ const {
 
 const fixtures = require('../common/fixtures');
 
-const publicPem = fixtures.readSync('test_rsa_pubkey.pem', 'ascii');
-const privatePem = fixtures.readSync('test_rsa_privkey.pem', 'ascii');
+const publicPem = fixtures.readKey('rsa_public.pem', 'ascii');
+const privatePem = fixtures.readKey('rsa_private.pem', 'ascii');
 
 const publicDsa = fixtures.readKey('dsa_public_1025.pem', 'ascii');
 const privateDsa = fixtures.readKey('dsa_private_encrypted_1025.pem',
@@ -36,6 +37,27 @@ const privateDsa = fixtures.readKey('dsa_private_encrypted_1025.pem',
     code: 'ERR_OUT_OF_RANGE',
     message: 'The value of "key.byteLength" is out of range. ' +
              'It must be > 0. Received 0'
+  });
+}
+
+{
+  // Attempting to create a key of a wrong type should throw
+  const TYPE = 'wrong_type';
+
+  common.expectsError(() => new KeyObject(TYPE), {
+    type: TypeError,
+    code: 'ERR_INVALID_ARG_VALUE',
+    message: `The argument 'type' is invalid. Received '${TYPE}'`
+  });
+}
+
+{
+  // Attempting to create a key with non-object handle should throw
+  common.expectsError(() => new KeyObject('secret', ''), {
+    type: TypeError,
+    code: 'ERR_INVALID_ARG_TYPE',
+    message:
+      'The "handle" argument must be of type object. Received type string'
   });
 }
 
@@ -181,18 +203,18 @@ const privateDsa = fixtures.readKey('dsa_private_encrypted_1025.pem',
 }
 
 [
-  { private: fixtures.readSync('test_ed25519_privkey.pem', 'ascii'),
-    public: fixtures.readSync('test_ed25519_pubkey.pem', 'ascii'),
+  { private: fixtures.readKey('ed25519_private.pem', 'ascii'),
+    public: fixtures.readKey('ed25519_public.pem', 'ascii'),
     keyType: 'ed25519' },
-  { private: fixtures.readSync('test_ed448_privkey.pem', 'ascii'),
-    public: fixtures.readSync('test_ed448_pubkey.pem', 'ascii'),
+  { private: fixtures.readKey('ed448_private.pem', 'ascii'),
+    public: fixtures.readKey('ed448_public.pem', 'ascii'),
     keyType: 'ed448' },
-  { private: fixtures.readSync('test_x25519_privkey.pem', 'ascii'),
-    public: fixtures.readSync('test_x25519_pubkey.pem', 'ascii'),
+  { private: fixtures.readKey('x25519_private.pem', 'ascii'),
+    public: fixtures.readKey('x25519_public.pem', 'ascii'),
     keyType: 'x25519' },
-  { private: fixtures.readSync('test_x448_privkey.pem', 'ascii'),
-    public: fixtures.readSync('test_x448_pubkey.pem', 'ascii'),
-    keyType: 'x448' }
+  { private: fixtures.readKey('x448_private.pem', 'ascii'),
+    public: fixtures.readKey('x448_public.pem', 'ascii'),
+    keyType: 'x448' },
 ].forEach((info) => {
   const keyType = info.keyType;
 

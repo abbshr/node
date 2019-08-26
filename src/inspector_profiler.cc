@@ -1,9 +1,14 @@
 #include "inspector_profiler.h"
 #include "base_object-inl.h"
 #include "debug_utils.h"
+#include "diagnosticfilename-inl.h"
+#include "memory_tracker-inl.h"
 #include "node_file.h"
 #include "node_internals.h"
+#include "util-inl.h"
 #include "v8-inspector.h"
+
+#include <sstream>
 
 namespace node {
 namespace profiler {
@@ -20,24 +25,7 @@ using v8::Object;
 using v8::String;
 using v8::Value;
 
-using v8_inspector::StringBuffer;
 using v8_inspector::StringView;
-
-#ifdef _WIN32
-const char* const kPathSeparator = "\\/";
-/* MAX_PATH is in characters, not bytes. Make sure we have enough headroom. */
-#define CWD_BUFSIZE (MAX_PATH * 4)
-#else
-#include <climits>  // PATH_MAX on Solaris.
-const char* const kPathSeparator = "/";
-#define CWD_BUFSIZE (PATH_MAX)
-#endif
-
-std::unique_ptr<StringBuffer> ToProtocolString(Isolate* isolate,
-                                               Local<Value> value) {
-  TwoByteValue buffer(isolate, value);
-  return StringBuffer::create(StringView(*buffer, buffer.length()));
-}
 
 V8ProfilerConnection::V8ProfilerConnection(Environment* env)
     : session_(env->inspector_agent()->Connect(
@@ -46,8 +34,27 @@ V8ProfilerConnection::V8ProfilerConnection(Environment* env)
           false)),
       env_(env) {}
 
-void V8ProfilerConnection::DispatchMessage(Local<String> message) {
-  session_->Dispatch(ToProtocolString(env()->isolate(), message)->string());
+size_t V8ProfilerConnection::DispatchMessage(const char* method,
+                                             const char* params) {
+  std::stringstream ss;
+  size_t id = next_id();
+  ss << R"({ "id": )" << id;
+  DCHECK(method != nullptr);
+  ss << R"(, "method": ")" << method << '"';
+  if (params != nullptr) {
+    ss << R"(, "params": )" << params;
+  }
+  ss << " }";
+  std::string message = ss.str();
+  const uint8_t* message_data =
+      reinterpret_cast<const uint8_t*>(message.c_str());
+  Debug(env(),
+        DebugCategory::INSPECTOR_PROFILER,
+        "Dispatching message %s\n",
+        message.c_str());
+  session_->Dispatch(StringView(message_data, message.length()));
+  // TODO(joyeecheung): use this to identify the ending message.
+  return id;
 }
 
 static void WriteResult(Environment* env,
@@ -90,7 +97,7 @@ void V8ProfilerConnection::V8ProfilerSessionDelegate::SendMessageToFrontend(
                               NewStringType::kNormal,
                               message.length())
            .ToLocal(&message_str)) {
-    fprintf(stderr, "Failed to covert %s profile message\n", type);
+    fprintf(stderr, "Failed to convert %s profile message\n", type);
     return;
   }
 
@@ -202,34 +209,15 @@ std::string V8CoverageConnection::GetDirectory() const {
 }
 
 void V8CoverageConnection::Start() {
-  Debug(env(),
-        DebugCategory::INSPECTOR_PROFILER,
-        "Sending Profiler.startPreciseCoverage\n");
-  Isolate* isolate = env()->isolate();
-  Local<String> enable = FIXED_ONE_BYTE_STRING(
-      isolate, R"({"id": 1, "method": "Profiler.enable"})");
-  Local<String> start = FIXED_ONE_BYTE_STRING(isolate, R"({
-      "id": 2,
-      "method": "Profiler.startPreciseCoverage",
-      "params": { "callCount": true, "detailed": true }
-  })");
-  DispatchMessage(enable);
-  DispatchMessage(start);
+  DispatchMessage("Profiler.enable");
+  DispatchMessage("Profiler.startPreciseCoverage",
+                  R"({ "callCount": true, "detailed": true })");
 }
 
 void V8CoverageConnection::End() {
   CHECK_EQ(ending_, false);
   ending_ = true;
-  Debug(env(),
-        DebugCategory::INSPECTOR_PROFILER,
-        "Sending Profiler.takePreciseCoverage\n");
-  Isolate* isolate = env()->isolate();
-  HandleScope scope(isolate);
-  Local<String> end = FIXED_ONE_BYTE_STRING(isolate, R"({
-      "id": 3,
-      "method": "Profiler.takePreciseCoverage"
-  })");
-  DispatchMessage(end);
+  DispatchMessage("Profiler.takePreciseCoverage");
 }
 
 std::string V8CpuProfilerConnection::GetDirectory() const {
@@ -257,25 +245,56 @@ MaybeLocal<Object> V8CpuProfilerConnection::GetProfile(Local<Object> result) {
 }
 
 void V8CpuProfilerConnection::Start() {
-  Debug(env(), DebugCategory::INSPECTOR_PROFILER, "Sending Profiler.start\n");
-  Isolate* isolate = env()->isolate();
-  Local<String> enable = FIXED_ONE_BYTE_STRING(
-      isolate, R"({"id": 1, "method": "Profiler.enable"})");
-  Local<String> start = FIXED_ONE_BYTE_STRING(
-      isolate, R"({"id": 2, "method": "Profiler.start"})");
-  DispatchMessage(enable);
-  DispatchMessage(start);
+  DispatchMessage("Profiler.enable");
+  DispatchMessage("Profiler.start");
+  std::string params = R"({ "interval": )";
+  params += std::to_string(env()->cpu_prof_interval());
+  params += " }";
+  DispatchMessage("Profiler.setSamplingInterval", params.c_str());
 }
 
 void V8CpuProfilerConnection::End() {
   CHECK_EQ(ending_, false);
   ending_ = true;
-  Debug(env(), DebugCategory::INSPECTOR_PROFILER, "Sending Profiler.stop\n");
-  Isolate* isolate = env()->isolate();
-  HandleScope scope(isolate);
-  Local<String> end =
-      FIXED_ONE_BYTE_STRING(isolate, R"({"id": 3, "method": "Profiler.stop"})");
-  DispatchMessage(end);
+  DispatchMessage("Profiler.stop");
+}
+
+std::string V8HeapProfilerConnection::GetDirectory() const {
+  return env()->heap_prof_dir();
+}
+
+std::string V8HeapProfilerConnection::GetFilename() const {
+  return env()->heap_prof_name();
+}
+
+MaybeLocal<Object> V8HeapProfilerConnection::GetProfile(Local<Object> result) {
+  Local<Value> profile_v;
+  if (!result
+           ->Get(env()->context(),
+                 FIXED_ONE_BYTE_STRING(env()->isolate(), "profile"))
+           .ToLocal(&profile_v)) {
+    fprintf(stderr, "'profile' from heap profile result is undefined\n");
+    return MaybeLocal<Object>();
+  }
+  if (!profile_v->IsObject()) {
+    fprintf(stderr, "'profile' from heap profile result is not an Object\n");
+    return MaybeLocal<Object>();
+  }
+  return profile_v.As<Object>();
+}
+
+void V8HeapProfilerConnection::Start() {
+  DispatchMessage("HeapProfiler.enable");
+  std::string params = R"({ "samplingInterval": )";
+  params += std::to_string(env()->heap_prof_interval());
+  params += " }";
+  DispatchMessage("HeapProfiler.startSampling", params.c_str());
+}
+
+void V8HeapProfilerConnection::End() {
+  CHECK_EQ(ending_, false);
+  ending_ = true;
+  DispatchMessage("HeapProfiler.stopSampling");
 }
 
 // For now, we only support coverage profiling, but we may add more
@@ -288,6 +307,12 @@ void EndStartedProfilers(Environment* env) {
     connection->End();
   }
 
+  connection = env->heap_profiler_connection();
+  if (connection != nullptr && !connection->ending()) {
+    Debug(env, DebugCategory::INSPECTOR_PROFILER, "Ending heap profiling\n");
+    connection->End();
+  }
+
   connection = env->coverage_connection();
   if (connection != nullptr && !connection->ending()) {
     Debug(
@@ -296,17 +321,20 @@ void EndStartedProfilers(Environment* env) {
   }
 }
 
-std::string GetCwd() {
-  char cwd[CWD_BUFSIZE];
-  size_t size = CWD_BUFSIZE;
-  int err = uv_cwd(cwd, &size);
-  // This can fail if the cwd is deleted.
-  // TODO(joyeecheung): store this in the Environment during Environment
-  // creation and fallback to exec_path and argv0, then we no longer need
-  // SetCoverageDirectory().
-  CHECK_EQ(err, 0);
-  CHECK_GT(size, 0);
-  return cwd;
+std::string GetCwd(Environment* env) {
+  char cwd[PATH_MAX_BYTES];
+  size_t size = PATH_MAX_BYTES;
+  const int err = uv_cwd(cwd, &size);
+
+  if (err == 0) {
+    CHECK_GT(size, 0);
+    return cwd;
+  }
+
+  // This can fail if the cwd is deleted. In that case, fall back to
+  // exec_path.
+  const std::string& exec_path = env->exec_path();
+  return exec_path.substr(0, exec_path.find_last_of(kPathSeparator));
 }
 
 void StartProfilers(Environment* env) {
@@ -320,7 +348,8 @@ void StartProfilers(Environment* env) {
   }
   if (env->options()->cpu_prof) {
     const std::string& dir = env->options()->cpu_prof_dir;
-    env->set_cpu_prof_dir(dir.empty() ? GetCwd() : dir);
+    env->set_cpu_prof_interval(env->options()->cpu_prof_interval);
+    env->set_cpu_prof_dir(dir.empty() ? GetCwd(env) : dir);
     if (env->options()->cpu_prof_name.empty()) {
       DiagnosticFilename filename(env, "CPU", "cpuprofile");
       env->set_cpu_prof_name(*filename);
@@ -331,6 +360,20 @@ void StartProfilers(Environment* env) {
     env->set_cpu_profiler_connection(
         std::make_unique<V8CpuProfilerConnection>(env));
     env->cpu_profiler_connection()->Start();
+  }
+  if (env->options()->heap_prof) {
+    const std::string& dir = env->options()->heap_prof_dir;
+    env->set_heap_prof_interval(env->options()->heap_prof_interval);
+    env->set_heap_prof_dir(dir.empty() ? GetCwd(env) : dir);
+    if (env->options()->heap_prof_name.empty()) {
+      DiagnosticFilename filename(env, "Heap", "heapprofile");
+      env->set_heap_prof_name(*filename);
+    } else {
+      env->set_heap_prof_name(env->options()->heap_prof_name);
+    }
+    env->set_heap_profiler_connection(
+        std::make_unique<profiler::V8HeapProfilerConnection>(env));
+    env->heap_profiler_connection()->Start();
   }
 }
 

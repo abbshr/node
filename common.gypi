@@ -28,6 +28,7 @@
     'clang%': 0,
 
     'openssl_fips%': '',
+    'openssl_no_asm%': 0,
 
     # Some STL containers (e.g. std::vector) do not preserve ABI compatibility
     # between debug and non-debug mode.
@@ -38,7 +39,7 @@
 
     # Reset this number to 0 on major V8 upgrades.
     # Increment by one for each non-official patch applied to deps/v8.
-    'v8_embedder_string': '-node.17',
+    'v8_embedder_string': '-node.11',
 
     ##### V8 defaults for Node.js #####
 
@@ -70,34 +71,57 @@
     # https://github.com/nodejs/node/pull/22920/files#r222779926
     'v8_enable_fast_mksnapshot': 0,
 
+    'v8_win64_unwinding_info': 1,
+
+    # TODO(refack): make v8-perfetto happen
+    'v8_use_perfetto': 0,
+
     ##### end V8 defaults #####
 
     'conditions': [
-      ['target_arch=="arm64"', {
-        # Disabled pending https://github.com/nodejs/node/issues/23913.
-        'openssl_no_asm%': 1,
-      }, {
-        'openssl_no_asm%': 0,
-      }],
-      ['GENERATOR=="ninja"', {
-        'obj_dir': '<(PRODUCT_DIR)/obj',
-        'v8_base': '<(PRODUCT_DIR)/obj/tools/v8_gypfiles/libv8_base.a',
-       }, {
-        'obj_dir%': '<(PRODUCT_DIR)/obj.target',
-        'v8_base': '<(PRODUCT_DIR)/obj.target/tools/v8_gypfiles/libv8_base.a',
-      }],
       ['OS == "win"', {
         'os_posix': 0,
         'v8_postmortem_support%': 0,
-        'obj_dir': '<(PRODUCT_DIR)/obj',
-        'v8_base': '<(PRODUCT_DIR)/lib/v8_libbase.lib',
       }, {
         'os_posix': 1,
         'v8_postmortem_support%': 1,
       }],
-      ['OS == "mac"', {
-        'obj_dir%': '<(PRODUCT_DIR)/obj.target',
-        'v8_base': '<(PRODUCT_DIR)/libv8_base.a',
+      ['v8_use_snapshot==1', {
+        'conditions': [
+          ['GENERATOR == "ninja"', {
+            'obj_dir': '<(PRODUCT_DIR)/obj',
+            'v8_base': '<(PRODUCT_DIR)/obj/tools/v8_gypfiles/libv8_snapshot.a',
+           }, {
+            'obj_dir%': '<(PRODUCT_DIR)/obj.target',
+            'v8_base': '<(PRODUCT_DIR)/obj.target/tools/v8_gypfiles/libv8_snapshot.a',
+          }],
+          ['OS == "win"', {
+            'obj_dir': '<(PRODUCT_DIR)/obj',
+            'v8_base': '<(PRODUCT_DIR)/lib/libv8_snapshot.a',
+          }],
+          ['OS == "mac"', {
+            'obj_dir%': '<(PRODUCT_DIR)/obj.target',
+            'v8_base': '<(PRODUCT_DIR)/libv8_snapshot.a',
+          }],
+        ],
+      }, {
+        'conditions': [
+          ['GENERATOR == "ninja"', {
+            'obj_dir': '<(PRODUCT_DIR)/obj',
+            'v8_base': '<(PRODUCT_DIR)/obj/tools/v8_gypfiles/libv8_nosnapshot.a',
+           }, {
+            'obj_dir%': '<(PRODUCT_DIR)/obj.target',
+            'v8_base': '<(PRODUCT_DIR)/obj.target/tools/v8_gypfiles/libv8_nosnapshot.a',
+          }],
+          ['OS == "win"', {
+            'obj_dir': '<(PRODUCT_DIR)/obj',
+            'v8_base': '<(PRODUCT_DIR)/lib/libv8_nosnapshot.a',
+          }],
+          ['OS == "mac"', {
+            'obj_dir%': '<(PRODUCT_DIR)/obj.target',
+            'v8_base': '<(PRODUCT_DIR)/libv8_nosnapshot.a',
+          }],
+        ],
       }],
       ['openssl_fips != ""', {
         'openssl_product': '<(STATIC_LIB_PREFIX)crypto<(STATIC_LIB_SUFFIX)',
@@ -225,39 +249,29 @@
     'msvs_settings': {
       'VCCLCompilerTool': {
         'BufferSecurityCheck': 'true',
-        'DebugInformationFormat': 1, # /Z7 embed info in .obj files
-        'ExceptionHandling': 0, # /EHsc
+        'DebugInformationFormat': 1,          # /Z7 embed info in .obj files
+        'ExceptionHandling': 0,               # /EHsc
         'MultiProcessorCompilation': 'true',
-        'StringPooling': 'true', # pool string literals
+        'StringPooling': 'true',              # pool string literals
         'SuppressStartupBanner': 'true',
         'WarnAsError': 'false',
-        'WarningLevel': 3,       # /W3
+        'WarningLevel': 3,                    # /W3
       },
       'VCLinkerTool': {
+        'target_conditions': [
+          ['_type=="executable"', {
+            'SubSystem': 1,                   # /SUBSYSTEM:CONSOLE
+          }],
+        ],
         'conditions': [
           ['target_arch=="ia32"', {
-            'TargetMachine' : 1, # /MACHINE:X86
-            'target_conditions': [
-              ['_type=="executable"', {
-                'AdditionalOptions': [ '/SubSystem:Console,"5.01"' ],
-              }],
-            ],
+            'TargetMachine' : 1,              # /MACHINE:X86
           }],
           ['target_arch=="x64"', {
-            'TargetMachine' : 17, # /MACHINE:AMD64
-            'target_conditions': [
-              ['_type=="executable"', {
-                'AdditionalOptions': [ '/SubSystem:Console,"5.02"' ],
-              }],
-            ],
+            'TargetMachine' : 17,             # /MACHINE:X64
           }],
           ['target_arch=="arm64"', {
-            'TargetMachine' : 0, # /MACHINE:ARM64 is inferred from the input files.
-            'target_conditions': [
-              ['_type=="executable"', {
-                'AdditionalOptions': [ '/SubSystem:Console' ],
-              }],
-            ],
+            'TargetMachine' : 0,              # NotSet. MACHINE:ARM64 is inferred from the input files.
           }],
         ],
         'GenerateDebugInformation': 'true',
@@ -374,10 +388,6 @@
             'cflags': [ '-m64', '-mminimal-toc' ],
             'ldflags': [ '-m64' ],
           }],
-          [ 'target_arch=="s390"', {
-            'cflags': [ '-m31', '-march=z196' ],
-            'ldflags': [ '-m31', '-march=z196' ],
-          }],
           [ 'target_arch=="s390x"', {
             'cflags': [ '-m64', '-march=z196' ],
             'ldflags': [ '-m64', '-march=z196' ],
@@ -480,6 +490,18 @@
       ['OS=="freebsd"', {
         'ldflags': [
           '-Wl,--export-dynamic',
+        ],
+      }],
+      # if node is built as an executable,
+      #      the openssl mechanism for keeping itself "dload"-ed to ensure proper
+      #      atexit cleanup does not apply
+      ['node_shared_openssl!="true" and node_shared!="true"', {
+        'defines': [
+          # `OPENSSL_NO_PINSHARED` prevents openssl from dload
+          #      current node executable,
+          #      see https://github.com/nodejs/node/pull/21848
+          #      or https://github.com/nodejs/node/issues/27925
+          'OPENSSL_NO_PINSHARED'
         ],
       }],
       ['node_shared_openssl!="true"', {

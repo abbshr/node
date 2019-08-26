@@ -63,7 +63,7 @@ added: v8.3.0
 
 An independent resolver for DNS requests.
 
-Note that creating a new resolver uses the default server settings. Setting
+Creating a new resolver uses the default server settings. Setting
 the servers used for a resolver using
 [`resolver.setServers()`][`dns.setServers()`] does not affect
 other resolvers:
@@ -139,8 +139,9 @@ changes:
 -->
 * `hostname` {string}
 * `options` {integer | Object}
-  - `family` {integer} The record family. Must be `4` or `6`. IPv4
-    and IPv6 addresses are both returned by default.
+  - `family` {integer} The record family. Must be `4`, `6`, or `0`. The value
+    `0` indicates that IPv4 and IPv6 addresses are both returned. **Default:**
+    `0`.
   - `hints` {number} One or more [supported `getaddrinfo` flags][]. Multiple
     flags may be passed by bitwise `OR`ing their values.
   - `all` {boolean} When `true`, the callback returns all resolved addresses in
@@ -168,7 +169,7 @@ With the `all` option set to `true`, the arguments for `callback` change to
 properties `address` and `family`.
 
 On error, `err` is an [`Error`][] object, where `err.code` is the error code.
-Keep in mind that `err.code` will be set to `'ENOENT'` not only when
+Keep in mind that `err.code` will be set to `'ENOTFOUND'` not only when
 the hostname does not exist but also when the lookup fails in other ways
 such as no available file descriptors.
 
@@ -211,7 +212,7 @@ of addresses supported by the current system. For example, IPv4 addresses
 are only returned if the current system has at least one IPv4 address
 configured. Loopback addresses are not considered.
 - `dns.V4MAPPED`: If the IPv6 family was specified, but no IPv6 addresses were
-found, then return IPv4 mapped IPv6 addresses. Note that it is not supported
+found, then return IPv4 mapped IPv6 addresses. It is not supported
 on some operating systems (e.g FreeBSD 10.1).
 
 ## dns.lookupService(address, port, callback)
@@ -581,7 +582,7 @@ The [`dns.setServers()`][] method affects only [`dns.resolve()`][],
 `dns.resolve*()` and [`dns.reverse()`][] (and specifically *not*
 [`dns.lookup()`][]).
 
-Note that this method works much like
+This method works much like
 [resolve.conf](http://man7.org/linux/man-pages/man5/resolv.conf.5.html).
 That is, if attempting to resolve with the first server provided results in a
 `NOTFOUND` error, the `resolve()` method will *not* attempt to resolve with
@@ -589,8 +590,6 @@ subsequent servers provided. Fallback DNS servers will only be used if the
 earlier ones time out or result in some other error.
 
 ## DNS Promises API
-
-> Stability: 2 - Stable
 
 The `dns.promises` API provides an alternative set of asynchronous DNS methods
 that return `Promise` objects rather than using callbacks. The API is accessible
@@ -603,7 +602,7 @@ added: v10.6.0
 
 An independent resolver for DNS requests.
 
-Note that creating a new resolver uses the default server settings. Setting
+Creating a new resolver uses the default server settings. Setting
 the servers used for a resolver using
 [`resolver.setServers()`][`dnsPromises.setServers()`] does not affect
 other resolvers:
@@ -669,8 +668,9 @@ added: v10.6.0
 -->
 * `hostname` {string}
 * `options` {integer | Object}
-  - `family` {integer} The record family. Must be `4` or `6`. IPv4
-    and IPv6 addresses are both returned by default.
+  - `family` {integer} The record family. Must be `4`, `6`, or `0`. The value
+    `0` indicates that IPv4 and IPv6 addresses are both returned. **Default:**
+    `0`.
   - `hints` {number} One or more [supported `getaddrinfo` flags][]. Multiple
     flags may be passed by bitwise `OR`ing their values.
   - `all` {boolean} When `true`, the `Promise` is resolved with all addresses in
@@ -692,7 +692,7 @@ being an array of objects with the properties `address` and `family`.
 
 On error, the `Promise` is rejected with an [`Error`][] object, where `err.code`
 is the error code.
-Keep in mind that `err.code` will be set to `'ENOENT'` not only when
+Keep in mind that `err.code` will be set to `'ENOTFOUND'` not only when
 the hostname does not exist but also when the lookup fails in other ways
 such as no available file descriptors.
 
@@ -1030,7 +1030,7 @@ An error will be thrown if an invalid address is provided.
 The `dnsPromises.setServers()` method must not be called while a DNS query is in
 progress.
 
-Note that this method works much like
+This method works much like
 [resolve.conf](http://man7.org/linux/man-pages/man5/resolv.conf.5.html).
 That is, if attempting to resolve with the first server provided results in a
 `NOTFOUND` error, the `resolve()` method will *not* attempt to resolve with
@@ -1081,8 +1081,8 @@ as most other programs. For instance, [`dns.lookup()`][] will almost always
 resolve a given name the same way as the `ping` command. On most POSIX-like
 operating systems, the behavior of the [`dns.lookup()`][] function can be
 modified by changing settings in nsswitch.conf(5) and/or resolv.conf(5),
-but note that changing these files will change the behavior of _all other
-programs running on the same operating system_.
+but changing these files will change the behavior of all other
+programs running on the same operating system.
 
 Though the call to `dns.lookup()` will be asynchronous from JavaScript's
 perspective, it is implemented as a synchronous call to getaddrinfo(3) that runs
@@ -1090,7 +1090,7 @@ on libuv's threadpool. This can have surprising negative performance
 implications for some applications, see the [`UV_THREADPOOL_SIZE`][]
 documentation for more information.
 
-Note that various networking APIs will call `dns.lookup()` internally to resolve
+Various networking APIs will call `dns.lookup()` internally to resolve
 host names. If that is an issue, consider resolving the hostname to an address
 using `dns.resolve()` and using the address instead of a host name. Also, some
 networking APIs (such as [`socket.connect()`][] and [`dgram.createSocket()`][])

@@ -66,11 +66,11 @@
       'defines': [ '__POSIX__' ],
     }],
     [ 'node_enable_d8=="true"', {
-      'dependencies': [ 'deps/v8/gypfiles/d8.gyp:d8' ],
+      'dependencies': [ 'tools/v8_gypfiles/d8.gyp:d8' ],
     }],
     [ 'node_use_bundled_v8=="true"', {
       'dependencies': [
-        'tools/v8_gypfiles/v8.gyp:v8',
+        'tools/v8_gypfiles/v8.gyp:v8_maybe_snapshot',
         'tools/v8_gypfiles/v8.gyp:v8_libplatform',
       ],
     }],
@@ -105,32 +105,16 @@
           'defines': [ 'NODE_HAVE_SMALL_ICU=1' ],
       }]],
     }],
-    [ 'node_use_bundled_v8=="true" and \
-       node_enable_v8_vtunejit=="true" and (target_arch=="x64" or \
-       target_arch=="ia32" or target_arch=="x32")', {
-      'defines': [ 'NODE_ENABLE_VTUNE_PROFILING' ],
-      'dependencies': [
-        'tools/v8_gypfiles/v8vtune.gyp:v8_vtune'
-      ],
-    }],
     [ 'node_no_browser_globals=="true"', {
       'defines': [ 'NODE_NO_BROWSER_GLOBALS' ],
     } ],
-    [ 'node_use_bundled_v8=="true" and v8_postmortem_support==1 and force_load=="true"', {
-      'xcode_settings': {
-        'OTHER_LDFLAGS': [
-          '-Wl,-force_load,<(v8_base)',
-        ],
-      },
-    }],
     [ 'node_shared_zlib=="false"', {
       'dependencies': [ 'deps/zlib/zlib.gyp:zlib' ],
       'conditions': [
         [ 'force_load=="true"', {
           'xcode_settings': {
             'OTHER_LDFLAGS': [
-              '-Wl,-force_load,<(PRODUCT_DIR)/<(STATIC_LIB_PREFIX)'
-                  'zlib<(STATIC_LIB_SUFFIX)',
+              '-Wl,-force_load,<(PRODUCT_DIR)/<(STATIC_LIB_PREFIX)zlib<(STATIC_LIB_SUFFIX)',
             ],
           },
           'msvs_settings': {
@@ -143,7 +127,7 @@
           'conditions': [
             ['OS!="aix" and node_shared=="false"', {
               'ldflags': [
-                '-Wl,--whole-archive,'
+                '-Wl,--whole-archive',
                 '<(obj_dir)/deps/zlib/<(STATIC_LIB_PREFIX)zlib<(STATIC_LIB_SUFFIX)',
                 '-Wl,--no-whole-archive',
               ],
@@ -170,8 +154,7 @@
         [ 'force_load=="true"', {
           'xcode_settings': {
             'OTHER_LDFLAGS': [
-              '-Wl,-force_load,<(PRODUCT_DIR)/<(STATIC_LIB_PREFIX)'
-                  'uv<(STATIC_LIB_SUFFIX)',
+              '-Wl,-force_load,<(PRODUCT_DIR)/libuv<(STATIC_LIB_SUFFIX)',
             ],
           },
           'msvs_settings': {
@@ -184,7 +167,7 @@
           'conditions': [
             ['OS!="aix" and node_shared=="false"', {
               'ldflags': [
-                '-Wl,--whole-archive,'
+                '-Wl,--whole-archive',
                 '<(obj_dir)/deps/uv/<(STATIC_LIB_PREFIX)uv<(STATIC_LIB_SUFFIX)',
                 '-Wl,--no-whole-archive',
               ],
@@ -269,9 +252,18 @@
     }],
     [ '(OS=="freebsd" or OS=="linux") and node_shared=="false"'
         ' and force_load=="true"', {
-      'ldflags': [ '-Wl,-z,noexecstack',
-                   '-Wl,--whole-archive <(v8_base)',
-                   '-Wl,--no-whole-archive' ]
+      'ldflags': [
+        '-Wl,-z,noexecstack',
+        '-Wl,--whole-archive <(v8_base)',
+        '-Wl,--no-whole-archive',
+      ]
+    }],
+    [ 'node_use_bundled_v8=="true" and v8_postmortem_support==1 and force_load=="true"', {
+      'xcode_settings': {
+        'OTHER_LDFLAGS': [
+          '-Wl,-force_load,<(v8_base)',
+        ],
+      },
     }],
     [ 'coverage=="true" and node_shared=="false" and OS in "mac freebsd linux"', {
       'cflags!': [ '-O3' ],
@@ -303,10 +295,22 @@
       'ldflags': [ '-Wl,-z,relro',
                    '-Wl,-z,now' ]
     }],
-    [ 'OS=="linux" and target_arch=="x64" and node_use_large_pages=="true"', {
+    [ 'OS=="linux" and '
+      'target_arch=="x64" and '
+      'node_use_large_pages=="true" and '
+      'node_use_large_pages_script_lld=="false"', {
       'ldflags': [
         '-Wl,-T',
         '<!(realpath src/large_pages/ld.implicit.script)',
+      ]
+    }],
+    [ 'OS=="linux" and '
+      'target_arch=="x64" and '
+      'node_use_large_pages=="true" and '
+      'node_use_large_pages_script_lld=="true"', {
+      'ldflags': [
+        '-Wl,-T',
+        '<!(realpath src/large_pages/ld.implicit.script.lld)',
       ]
     }],
     [ 'node_use_openssl=="true"', {

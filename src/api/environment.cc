@@ -1,4 +1,3 @@
-#include "env.h"
 #include "node.h"
 #include "node_context_data.h"
 #include "node_errors.h"
@@ -8,11 +7,9 @@
 #include "node_v8_platform-inl.h"
 #include "uv.h"
 
-#ifdef NODE_ENABLE_VTUNE_PROFILING
-#include "../deps/v8/src/third_party/vtune/v8-vtune.h"
-#endif
-
 namespace node {
+using errors::TryCatchScope;
+using v8::Array;
 using v8::Context;
 using v8::EscapableHandleScope;
 using v8::Function;
@@ -20,7 +17,6 @@ using v8::HandleScope;
 using v8::Isolate;
 using v8::Local;
 using v8::MaybeLocal;
-using v8::Message;
 using v8::MicrotasksPolicy;
 using v8::Null;
 using v8::Object;
@@ -43,6 +39,41 @@ static bool ShouldAbortOnUncaughtException(Isolate* isolate) {
          (env->is_main_thread() || !env->is_stopping()) &&
          env->should_abort_on_uncaught_toggle()[0] &&
          !env->inside_should_not_abort_on_uncaught_scope();
+}
+
+static MaybeLocal<Value> PrepareStackTraceCallback(Local<Context> context,
+                                      Local<Value> exception,
+                                      Local<Array> trace) {
+  Environment* env = Environment::GetCurrent(context);
+  if (env == nullptr) {
+    MaybeLocal<String> s = exception->ToString(context);
+    return s.IsEmpty() ?
+      MaybeLocal<Value>() :
+      MaybeLocal<Value>(s.ToLocalChecked());
+  }
+  Local<Function> prepare = env->prepare_stack_trace_callback();
+  if (prepare.IsEmpty()) {
+    MaybeLocal<String> s = exception->ToString(context);
+    return s.IsEmpty() ?
+      MaybeLocal<Value>() :
+      MaybeLocal<Value>(s.ToLocalChecked());
+  }
+  Local<Value> args[] = {
+      context->Global(),
+      exception,
+      trace,
+  };
+  // This TryCatch + Rethrow is required by V8 due to details around exception
+  // handling there. For C++ callbacks, V8 expects a scheduled exception (which
+  // is what ReThrow gives us). Just returning the empty MaybeLocal would leave
+  // us with a pending exception.
+  TryCatchScope try_catch(env);
+  MaybeLocal<Value> result = prepare->Call(
+      context, Undefined(env->isolate()), arraysize(args), args);
+  if (try_catch.HasCaught() && !try_catch.HasTerminated()) {
+    try_catch.ReThrow();
+  }
+  return result;
 }
 
 void* NodeArrayBufferAllocator::Allocate(size_t size) {
@@ -143,17 +174,16 @@ void FreeArrayBufferAllocator(ArrayBufferAllocator* allocator) {
 }
 
 void SetIsolateCreateParamsForNode(Isolate::CreateParams* params) {
-  const uint64_t total_memory = uv_get_total_memory();
+  const uint64_t constrained_memory = uv_get_constrained_memory();
+  const uint64_t total_memory = constrained_memory > 0 ?
+      std::min(uv_get_total_memory(), constrained_memory) :
+      uv_get_total_memory();
   if (total_memory > 0) {
     // V8 defaults to 700MB or 1.4GB on 32 and 64 bit platforms respectively.
     // This default is based on browser use-cases. Tell V8 to configure the
     // heap based on the actual physical memory.
     params->constraints.ConfigureDefaults(total_memory, 0);
   }
-
-#ifdef NODE_ENABLE_VTUNE_PROFILING
-  params->code_event_handler = vTune::GetVtuneCodeEventHandler();
-#endif
 }
 
 void SetIsolateUpForNode(v8::Isolate* isolate, IsolateSettingCategories cat) {
@@ -166,6 +196,7 @@ void SetIsolateUpForNode(v8::Isolate* isolate, IsolateSettingCategories cat) {
       isolate->SetAbortOnUncaughtExceptionCallback(
           ShouldAbortOnUncaughtException);
       isolate->SetFatalErrorHandler(OnFatalError);
+      isolate->SetPrepareStackTraceCallback(PrepareStackTraceCallback);
       break;
     case IsolateSettingCategories::kMisc:
       isolate->SetMicrotasksPolicy(MicrotasksPolicy::kExplicit);
@@ -244,12 +275,13 @@ Environment* CreateEnvironment(IsolateData* isolate_data,
   Environment* env = new Environment(
       isolate_data,
       context,
+      args,
+      exec_args,
       static_cast<Environment::Flags>(Environment::kIsMainThread |
                                       Environment::kOwnsProcessState |
                                       Environment::kOwnsInspector));
   env->InitializeLibuv(per_process::v8_is_profiling);
-  env->ProcessCliArgs(args, exec_args);
-  if (RunBootstrapping(env).IsEmpty()) {
+  if (env->RunBootstrapping().IsEmpty()) {
     return nullptr;
   }
 

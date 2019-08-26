@@ -21,10 +21,11 @@
 
 #include "node_file.h"
 #include "aliased_buffer.h"
+#include "memory_tracker-inl.h"
 #include "node_buffer.h"
 #include "node_process.h"
 #include "node_stat_watcher.h"
-#include "util.h"
+#include "util-inl.h"
 
 #include "tracing/trace_event.h"
 
@@ -87,7 +88,7 @@ constexpr char kPathSeparator = '/';
 const char* const kPathSeparator = "\\/";
 #endif
 
-#define GET_OFFSET(a) ((a)->IsNumber() ? (a).As<Integer>()->Value() : -1)
+#define GET_OFFSET(a) (IsSafeJsInt(a) ? (a).As<Integer>()->Value() : -1)
 #define TRACE_NAME(name) "fs.sync." #name
 #define GET_TRACE_ENABLED                                                  \
   (*TRACE_EVENT_API_GET_CATEGORY_GROUP_ENABLED                             \
@@ -169,35 +170,33 @@ inline void FileHandle::Close() {
 
   struct err_detail { int ret; int fd; };
 
-  err_detail* detail = new err_detail { ret, fd_ };
+  err_detail detail { ret, fd_ };
 
   if (ret < 0) {
     // Do not unref this
-    env()->SetImmediate([](Environment* env, void* data) {
+    env()->SetImmediate([detail](Environment* env) {
       char msg[70];
-      std::unique_ptr<err_detail> detail(static_cast<err_detail*>(data));
       snprintf(msg, arraysize(msg),
               "Closing file descriptor %d on garbage collection failed",
-              detail->fd);
+              detail.fd);
       // This exception will end up being fatal for the process because
       // it is being thrown from within the SetImmediate handler and
       // there is no JS stack to bubble it to. In other words, tearing
       // down the process is the only reasonable thing we can do here.
       HandleScope handle_scope(env->isolate());
-      env->ThrowUVException(detail->ret, "close", msg);
-    }, detail);
+      env->ThrowUVException(detail.ret, "close", msg);
+    });
     return;
   }
 
   // If the close was successful, we still want to emit a process warning
   // to notify that the file descriptor was gc'd. We want to be noisy about
   // this because not explicitly closing the FileHandle is a bug.
-  env()->SetUnrefImmediate([](Environment* env, void* data) {
-    std::unique_ptr<err_detail> detail(static_cast<err_detail*>(data));
+  env()->SetUnrefImmediate([detail](Environment* env) {
     ProcessEmitWarning(env,
                        "Closing file descriptor %d on garbage collection",
-                       detail->fd);
-  }, detail);
+                       detail.fd);
+  });
 }
 
 void FileHandle::CloseReq::Resolve() {
@@ -871,7 +870,9 @@ static void InternalModuleReadJSON(const FunctionCallbackInfo<Value>& args) {
   }
 
   const size_t size = offset - start;
-  if (size == 0 || size == SearchString(&chars[start], size, "\"main\"")) {
+  if (size == 0 || (
+    size == SearchString(&chars[start], size, "\"main\"") &&
+    size == SearchString(&chars[start], size, "\"exports\""))) {
     return;
   } else {
     Local<String> chars_string =
@@ -1129,7 +1130,7 @@ static void FTruncate(const FunctionCallbackInfo<Value>& args) {
   CHECK(args[0]->IsInt32());
   const int fd = args[0].As<Int32>()->Value();
 
-  CHECK(args[1]->IsNumber());
+  CHECK(IsSafeJsInt(args[1]));
   const int64_t len = args[1].As<Integer>()->Value();
 
   FSReqBase* req_wrap_async = GetReqWrap(env, args[2]);
@@ -1668,9 +1669,11 @@ static void WriteBuffer(const FunctionCallbackInfo<Value>& args) {
   char* buffer_data = Buffer::Data(buffer_obj);
   size_t buffer_length = Buffer::Length(buffer_obj);
 
-  CHECK(args[2]->IsInt32());
-  const size_t off = static_cast<size_t>(args[2].As<Int32>()->Value());
-  CHECK_LE(off, buffer_length);
+  CHECK(IsSafeJsInt(args[2]));
+  const int64_t off_64 = args[2].As<Integer>()->Value();
+  CHECK_GE(off_64, 0);
+  CHECK_LE(static_cast<uint64_t>(off_64), buffer_length);
+  const size_t off = static_cast<size_t>(off_64);
 
   CHECK(args[3]->IsInt32());
   const size_t len = static_cast<size_t>(args[3].As<Int32>()->Value());
@@ -1850,7 +1853,7 @@ static void WriteString(const FunctionCallbackInfo<Value>& args) {
  *
  * 0 fd        int32. file descriptor
  * 1 buffer    instance of Buffer
- * 2 offset    int32. offset to start reading into inside buffer
+ * 2 offset    int64. offset to start reading into inside buffer
  * 3 length    int32. length to read
  * 4 position  int64. file position - -1 for current position
  */
@@ -1868,15 +1871,17 @@ static void Read(const FunctionCallbackInfo<Value>& args) {
   char* buffer_data = Buffer::Data(buffer_obj);
   size_t buffer_length = Buffer::Length(buffer_obj);
 
-  CHECK(args[2]->IsInt32());
-  const size_t off = static_cast<size_t>(args[2].As<Int32>()->Value());
-  CHECK_LT(off, buffer_length);
+  CHECK(IsSafeJsInt(args[2]));
+  const int64_t off_64 = args[2].As<Integer>()->Value();
+  CHECK_GE(off_64, 0);
+  CHECK_LT(static_cast<uint64_t>(off_64), buffer_length);
+  const size_t off = static_cast<size_t>(off_64);
 
   CHECK(args[3]->IsInt32());
   const size_t len = static_cast<size_t>(args[3].As<Int32>()->Value());
   CHECK(Buffer::IsWithinBounds(off, len, buffer_length));
 
-  CHECK(args[4]->IsNumber());
+  CHECK(IsSafeJsInt(args[4]));
   const int64_t pos = args[4].As<Integer>()->Value();
 
   char* buf = buffer_data + off;
@@ -2196,10 +2201,13 @@ void Initialize(Local<Object> target,
 
   env->SetMethod(target, "mkdtemp", Mkdtemp);
 
-  target->Set(context,
-              FIXED_ONE_BYTE_STRING(isolate, "kFsStatsFieldsNumber"),
-              Integer::New(isolate, kFsStatsFieldsNumber))
-        .Check();
+  target
+      ->Set(context,
+            FIXED_ONE_BYTE_STRING(isolate, "kFsStatsFieldsNumber"),
+            Integer::New(
+                isolate,
+                static_cast<int32_t>(FsStatsOffset::kFsStatsFieldsNumber)))
+      .Check();
 
   target->Set(context,
               FIXED_ONE_BYTE_STRING(isolate, "statValues"),

@@ -171,11 +171,10 @@ try {
 
 This will not work because the callback function passed to `fs.readFile()` is
 called asynchronously. By the time the callback has been called, the
-surrounding code (including the `try { } catch (err) { }` block will have
-already exited. Throwing an error inside the callback **can crash the Node.js
-process** in most cases. If [domains][] are enabled, or a handler has been
-registered with `process.on('uncaughtException')`, such errors can be
-intercepted.
+surrounding code, including the `try…catch` block, will have already exited.
+Throwing an error inside the callback **can crash the Node.js process** in most
+cases. If [domains][] are enabled, or a handler has been registered with
+`process.on('uncaughtException')`, such errors can be intercepted.
 
 ## Class: Error
 
@@ -419,7 +418,7 @@ attempts to read a file that does not exist.
 * `code` {string} The string error code
 * `dest` {string} If present, the file path destination when reporting a file
   system error
-* `errno` {number|string} The system-provided error number
+* `errno` {number} The system-provided error number
 * `info` {Object} If present, extra details about the error condition
 * `message` {string} A system-provided human-readable description of the error
 * `path` {string} If present, the file path when reporting a file system error
@@ -448,13 +447,15 @@ system error.
 
 ### error.errno
 
-* {string|number}
+* {number}
 
-The `error.errno` property is a number or a string. If it is a number, it is a
-negative value which corresponds to the error code defined in
-[`libuv Error handling`]. See the libuv `errno.h` header file
-(`deps/uv/include/uv/errno.h` in the Node.js source tree) for details. In case
-of a string, it is the same as `error.code`.
+The `error.errno` property is a negative number which corresponds
+to the error code defined in [`libuv Error handling`].
+
+On Windows the error number provided by the system will be normalized by libuv.
+
+To get the string representation of the error code, use
+[`util.getSystemErrorName(error.errno)`].
 
 ### error.info
 
@@ -634,7 +635,7 @@ An attempt was made to register something that is not a function as an
 <a id="ERR_ASYNC_TYPE"></a>
 ### ERR_ASYNC_TYPE
 
-The type of an asynchronous resource was invalid. Note that users are also able
+The type of an asynchronous resource was invalid. Users are also able
 to define their own types if using the public embedder API.
 
 <a id="ERR_BROTLI_COMPRESSION_FAILED"></a>
@@ -671,12 +672,6 @@ An operation outside the bounds of a `Buffer` was attempted.
 An attempt has been made to create a `Buffer` larger than the maximum allowed
 size.
 
-<a id="ERR_CANNOT_TRANSFER_OBJECT"></a>
-### ERR_CANNOT_TRANSFER_OBJECT
-
-The value passed to `postMessage()` contained an object that is not supported
-for transferring.
-
 <a id="ERR_CANNOT_WATCH_SIGINT"></a>
 ### ERR_CANNOT_WATCH_SIGINT
 
@@ -708,6 +703,14 @@ non-writable `stdout` or `stderr` stream.
 ### ERR_CONSTRUCT_CALL_REQUIRED
 
 A constructor for a class was called without `new`.
+
+<a id="ERR_CONSTRUCT_CALL_INVALID"></a>
+### ERR_CONSTRUCT_CALL_INVALID
+<!--
+added: v12.5.0
+-->
+
+A class constructor was called that is not callable.
 
 <a id="ERR_CPU_USAGE"></a>
 ### ERR_CPU_USAGE
@@ -1185,6 +1188,11 @@ after the session had already closed.
 
 An error occurred while issuing a command via the `inspector` module.
 
+<a id="ERR_INSPECTOR_NOT_ACTIVE"></a>
+### ERR_INSPECTOR_NOT_ACTIVE
+
+The `inspector` is not active when `inspector.waitForDebugger()` is called.
+
 <a id="ERR_INSPECTOR_NOT_AVAILABLE"></a>
 ### ERR_INSPECTOR_NOT_AVAILABLE
 
@@ -1310,8 +1318,14 @@ An invalid `options.protocol` was passed to `http.request()`.
 <a id="ERR_INVALID_REPL_EVAL_CONFIG"></a>
 ### ERR_INVALID_REPL_EVAL_CONFIG
 
-Both `breakEvalOnSigint` and `eval` options were set in the REPL config, which
-is not supported.
+Both `breakEvalOnSigint` and `eval` options were set in the [`REPL`][] config,
+which is not supported.
+
+<a id="ERR_INVALID_REPL_INPUT"></a>
+### ERR_INVALID_REPL_INPUT
+
+The input may not be used in the [`REPL`][]. All prohibited inputs are
+documented in the [`REPL`][]'s documentation.
 
 <a id="ERR_INVALID_RETURN_PROPERTY"></a>
 ### ERR_INVALID_RETURN_PROPERTY
@@ -1418,6 +1432,13 @@ An attempt was made to load a resource, but the resource did not match the
 integrity defined by the policy manifest. See the documentation for [policy]
 manifests for more information.
 
+<a id="ERR_MANIFEST_DEPENDENCY_MISSING"></a>
+### ERR_MANIFEST_DEPENDENCY_MISSING
+
+An attempt was made to load a resource, but the resource was not listed as a
+dependency from the location that attempted to load it. See the documentation
+for [policy] manifests for more information.
+
 <a id="ERR_MANIFEST_INTEGRITY_MISMATCH"></a>
 ### ERR_MANIFEST_INTEGRITY_MISMATCH
 
@@ -1425,6 +1446,13 @@ An attempt was made to load a policy manifest, but the manifest had multiple
 entries for a resource which did not match each other. Update the manifest
 entries to match in order to resolve this error. See the documentation for
 [policy] manifests for more information.
+
+<a id="ERR_MANIFEST_INVALID_RESOURCE_FIELD"></a>
+### ERR_MANIFEST_INVALID_RESOURCE_FIELD
+
+A policy manifest resource had an invalid value for one of its fields. Update
+the manifest entry to match in order to resolve this error. See the
+documentation for [policy] manifests for more information.
 
 <a id="ERR_MANIFEST_PARSE_POLICY"></a>
 ### ERR_MANIFEST_PARSE_POLICY
@@ -1674,6 +1702,12 @@ An attempt was made to call [`stream.pipe()`][] on a [`Writable`][] stream.
 
 A stream method was called that cannot complete because the stream was
 destroyed using `stream.destroy()`.
+
+<a id="ERR_STREAM_ALREADY_FINISHED"></a>
+### ERR_STREAM_ALREADY_FINISHED
+
+A stream method was called that cannot complete because the stream was
+finished.
 
 <a id="ERR_STREAM_NULL_VALUES"></a>
 ### ERR_STREAM_NULL_VALUES
@@ -2007,6 +2041,16 @@ A module file could not be resolved while attempting a [`require()`][] or
 > Stability: 0 - Deprecated. These error codes are either inconsistent, or have
 > been removed.
 
+<a id="ERR_CANNOT_TRANSFER_OBJECT"></a>
+### ERR_CANNOT_TRANSFER_OBJECT
+<!--
+added: v10.5.0
+removed: v12.5.0
+-->
+
+The value passed to `postMessage()` contained an object that is not supported
+for transferring.
+
 <a id="ERR_CLOSED_MESSAGE_PORT"></a>
 ### ERR_CLOSED_MESSAGE_PORT
 <!-- YAML
@@ -2307,6 +2351,7 @@ such as `process.stdout.on('data')`.
 [`Class: assert.AssertionError`]: assert.html#assert_class_assert_assertionerror
 [`ERR_INVALID_ARG_TYPE`]: #ERR_INVALID_ARG_TYPE
 [`EventEmitter`]: events.html#events_class_eventemitter
+[`REPL`]: repl.html
 [`Writable`]: stream.html#stream_class_stream_writable
 [`child_process`]: child_process.html
 [`cipher.getAuthTag()`]: crypto.html#crypto_cipher_getauthtag
@@ -2342,10 +2387,11 @@ such as `process.stdout.on('data')`.
 [`sign.sign()`]: crypto.html#crypto_sign_sign_privatekey_outputencoding
 [`stream.pipe()`]: stream.html#stream_readable_pipe_destination_options
 [`stream.push()`]: stream.html#stream_readable_push_chunk_encoding
-[`stream.unshift()`]: stream.html#stream_readable_unshift_chunk
+[`stream.unshift()`]: stream.html#stream_readable_unshift_chunk_encoding
 [`stream.write()`]: stream.html#stream_writable_write_chunk_encoding_callback
 [`subprocess.kill()`]: child_process.html#child_process_subprocess_kill_signal
 [`subprocess.send()`]: child_process.html#child_process_subprocess_send_message_sendhandle_options_callback
+[`util.getSystemErrorName(error.errno)`]: util.html#util_util_getsystemerrorname_err
 [`zlib`]: zlib.html
 [ES Module]: esm.html
 [ICU]: intl.html#intl_internationalization_support

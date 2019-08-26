@@ -3,7 +3,6 @@
 
 #include "env-inl.h"
 #include "debug_utils.h"
-#include "util.h"
 #include <algorithm>
 #include <cmath>
 #include <memory>
@@ -444,17 +443,6 @@ NodePlatform::ForIsolate(Isolate* isolate) {
   std::shared_ptr<PerIsolatePlatformData> data = per_isolate_[isolate];
   CHECK(data);
   return data;
-}
-
-void NodePlatform::CallOnForegroundThread(Isolate* isolate, Task* task) {
-  ForIsolate(isolate)->PostTask(std::unique_ptr<Task>(task));
-}
-
-void NodePlatform::CallDelayedOnForegroundThread(Isolate* isolate,
-                                                 Task* task,
-                                                 double delay_in_seconds) {
-  ForIsolate(isolate)->PostDelayedTask(
-    std::unique_ptr<Task>(task), delay_in_seconds);
 }
 
 bool NodePlatform::FlushForegroundTasks(Isolate* isolate) {

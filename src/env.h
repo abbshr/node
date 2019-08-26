@@ -55,6 +55,7 @@ namespace node {
 
 namespace contextify {
 class ContextifyScript;
+class CompiledFnEntry;
 }
 
 namespace fs {
@@ -73,7 +74,12 @@ class AgentWriterHandle;
 namespace profiler {
 class V8CoverageConnection;
 class V8CpuProfilerConnection;
+class V8HeapProfilerConnection;
 }  // namespace profiler
+
+namespace inspector {
+class ParentInspectorHandle;
+}
 #endif  // HAVE_INSPECTOR
 
 namespace worker {
@@ -94,13 +100,37 @@ struct PackageConfig {
   const HasMain has_main;
   const std::string main;
   const PackageType type;
+
+  v8::Global<v8::Value> exports;
 };
 }  // namespace loader
 
+enum class FsStatsOffset {
+  kDev = 0,
+  kMode,
+  kNlink,
+  kUid,
+  kGid,
+  kRdev,
+  kBlkSize,
+  kIno,
+  kSize,
+  kBlocks,
+  kATimeSec,
+  kATimeNsec,
+  kMTimeSec,
+  kMTimeNsec,
+  kCTimeSec,
+  kCTimeNsec,
+  kBirthTimeSec,
+  kBirthTimeNsec,
+  kFsStatsFieldsNumber
+};
+
 // Stat fields buffers contain twice the number of entries in an uv_stat_t
 // because `fs.StatWatcher` needs room to store 2 `fs.Stats` instances.
-constexpr size_t kFsStatsFieldsNumber = 14;
-constexpr size_t kFsStatsBufferLength = kFsStatsFieldsNumber * 2;
+constexpr size_t kFsStatsBufferLength =
+    static_cast<size_t>(FsStatsOffset::kFsStatsFieldsNumber) * 2;
 
 // PER_ISOLATE_* macros: We have a lot of per-isolate properties
 // and adding and maintaining their getters and setters by hand would be
@@ -122,7 +152,6 @@ constexpr size_t kFsStatsBufferLength = kFsStatsFieldsNumber * 2;
   V(contextify_context_private_symbol, "node:contextify:context")             \
   V(contextify_global_private_symbol, "node:contextify:global")               \
   V(decorated_private_symbol, "node:decorated")                               \
-  V(napi_env, "node:napi:env")                                                \
   V(napi_wrapper, "node:napi:wrapper")                                        \
   V(sab_lifetimepartner_symbol, "node:sharedArrayBufferLifetimePartner")      \
 
@@ -130,6 +159,7 @@ constexpr size_t kFsStatsBufferLength = kFsStatsFieldsNumber * 2;
 // for the sake of convenience.
 #define PER_ISOLATE_SYMBOL_PROPERTIES(V)                                      \
   V(handle_onclose_symbol, "handle_onclose")                                  \
+  V(no_message_symbol, "no_message_symbol")                                   \
   V(oninit_symbol, "oninit")                                                  \
   V(owner_symbol, "owner")                                                    \
 
@@ -149,9 +179,11 @@ constexpr size_t kFsStatsBufferLength = kFsStatsFieldsNumber * 2;
   V(cached_data_produced_string, "cachedDataProduced")                         \
   V(cached_data_rejected_string, "cachedDataRejected")                         \
   V(cached_data_string, "cachedData")                                          \
+  V(cache_key_string, "cacheKey")                                              \
   V(change_string, "change")                                                   \
   V(channel_string, "channel")                                                 \
   V(chunks_sent_since_last_write_string, "chunksSentSinceLastWrite")           \
+  V(clone_unsupported_type_str, "Cannot transfer object of unsupported type.") \
   V(code_string, "code")                                                       \
   V(commonjs_string, "commonjs")                                               \
   V(config_string, "config")                                                   \
@@ -198,6 +230,7 @@ constexpr size_t kFsStatsBufferLength = kFsStatsFieldsNumber * 2;
   V(family_string, "family")                                                   \
   V(fatal_exception_string, "_fatalException")                                 \
   V(fd_string, "fd")                                                           \
+  V(fields_string, "fields")                                                   \
   V(file_string, "file")                                                       \
   V(fingerprint256_string, "fingerprint256")                                   \
   V(fingerprint_string, "fingerprint")                                         \
@@ -252,6 +285,7 @@ constexpr size_t kFsStatsBufferLength = kFsStatsFieldsNumber * 2;
   V(onexit_string, "onexit")                                                   \
   V(onhandshakedone_string, "onhandshakedone")                                 \
   V(onhandshakestart_string, "onhandshakestart")                               \
+  V(onkeylog_string, "onkeylog")                                               \
   V(onmessage_string, "onmessage")                                             \
   V(onnewsession_string, "onnewsession")                                       \
   V(onocspresponse_string, "onocspresponse")                                   \
@@ -344,6 +378,7 @@ constexpr size_t kFsStatsBufferLength = kFsStatsFieldsNumber * 2;
   V(as_callback_data_template, v8::FunctionTemplate)                           \
   V(async_wrap_ctor_template, v8::FunctionTemplate)                            \
   V(async_wrap_object_ctor_template, v8::FunctionTemplate)                     \
+  V(compiled_fn_entry_template, v8::ObjectTemplate)                            \
   V(fd_constructor_template, v8::ObjectTemplate)                               \
   V(fdclose_constructor_template, v8::ObjectTemplate)                          \
   V(filehandlereadwrap_template, v8::ObjectTemplate)                           \
@@ -378,6 +413,8 @@ constexpr size_t kFsStatsBufferLength = kFsStatsFieldsNumber * 2;
   V(crypto_key_object_constructor, v8::Function)                               \
   V(domain_callback, v8::Function)                                             \
   V(domexception_function, v8::Function)                                       \
+  V(enhance_fatal_stack_after_inspector, v8::Function)                         \
+  V(enhance_fatal_stack_before_inspector, v8::Function)                        \
   V(fs_use_promises_symbol, v8::Symbol)                                        \
   V(host_import_module_dynamically_callback, v8::Function)                     \
   V(host_initialize_import_meta_object_callback, v8::Function)                 \
@@ -389,7 +426,6 @@ constexpr size_t kFsStatsBufferLength = kFsStatsFieldsNumber * 2;
   V(http2session_on_origin_function, v8::Function)                             \
   V(http2session_on_ping_function, v8::Function)                               \
   V(http2session_on_priority_function, v8::Function)                           \
-  V(http2session_on_select_padding_function, v8::Function)                     \
   V(http2session_on_settings_function, v8::Function)                           \
   V(http2session_on_stream_close_function, v8::Function)                       \
   V(http2session_on_stream_trailers_function, v8::Function)                    \
@@ -400,6 +436,7 @@ constexpr size_t kFsStatsBufferLength = kFsStatsFieldsNumber * 2;
   V(native_module_require, v8::Function)                                       \
   V(performance_entry_callback, v8::Function)                                  \
   V(performance_entry_template, v8::Function)                                  \
+  V(prepare_stack_trace_callback, v8::Function)                                \
   V(process_object, v8::Object)                                                \
   V(primordials, v8::Object)                                                   \
   V(promise_reject_callback, v8::Function)                                     \
@@ -451,6 +488,8 @@ class IsolateData : public MemoryRetainer {
   inline v8::Isolate* isolate() const;
   IsolateData(const IsolateData&) = delete;
   IsolateData& operator=(const IsolateData&) = delete;
+  IsolateData(IsolateData&&) = delete;
+  IsolateData& operator=(IsolateData&&) = delete;
 
  private:
   void DeserializeProperties(const std::vector<size_t>* indexes);
@@ -483,12 +522,6 @@ struct ContextInfo {
   const std::string name;
   std::string origin;
   bool is_default = false;
-};
-
-struct CompileFnEntry {
-  Environment* env;
-  uint32_t id;
-  CompileFnEntry(Environment* env, uint32_t id);
 };
 
 // Listing the AsyncWrap provider types first enables us to cast directly
@@ -541,6 +574,12 @@ class AsyncRequest : public MemoryRetainer {
  public:
   AsyncRequest() = default;
   ~AsyncRequest();
+
+  AsyncRequest(const AsyncRequest&) = delete;
+  AsyncRequest& operator=(const AsyncRequest&) = delete;
+  AsyncRequest(AsyncRequest&&) = delete;
+  AsyncRequest& operator=(AsyncRequest&&) = delete;
+
   void Install(Environment* env, void* data, uv_async_cb target);
   void Uninstall();
   void Stop();
@@ -561,6 +600,13 @@ class AsyncRequest : public MemoryRetainer {
 
 class KVStore {
  public:
+  KVStore() = default;
+  virtual ~KVStore() = default;
+  KVStore(const KVStore&) = delete;
+  KVStore& operator=(const KVStore&) = delete;
+  KVStore(KVStore&&) = delete;
+  KVStore& operator=(KVStore&&) = delete;
+
   virtual v8::Local<v8::String> Get(v8::Isolate* isolate,
                                     v8::Local<v8::String> key) const = 0;
   virtual void Set(v8::Isolate* isolate,
@@ -625,6 +671,9 @@ class AsyncHooks : public MemoryRetainer {
 
   AsyncHooks(const AsyncHooks&) = delete;
   AsyncHooks& operator=(const AsyncHooks&) = delete;
+  AsyncHooks(AsyncHooks&&) = delete;
+  AsyncHooks& operator=(AsyncHooks&&) = delete;
+  ~AsyncHooks() = default;
 
   // Used to set the kDefaultTriggerAsyncId in a scope. This is instead of
   // passing the trigger_async_id along with other constructor arguments.
@@ -638,6 +687,9 @@ class AsyncHooks : public MemoryRetainer {
 
     DefaultTriggerAsyncIdScope(const DefaultTriggerAsyncIdScope&) = delete;
     DefaultTriggerAsyncIdScope& operator=(const DefaultTriggerAsyncIdScope&) =
+        delete;
+    DefaultTriggerAsyncIdScope(DefaultTriggerAsyncIdScope&&) = delete;
+    DefaultTriggerAsyncIdScope& operator=(DefaultTriggerAsyncIdScope&&) =
         delete;
 
    private:
@@ -668,6 +720,8 @@ class AsyncCallbackScope {
   ~AsyncCallbackScope();
   AsyncCallbackScope(const AsyncCallbackScope&) = delete;
   AsyncCallbackScope& operator=(const AsyncCallbackScope&) = delete;
+  AsyncCallbackScope(AsyncCallbackScope&&) = delete;
+  AsyncCallbackScope& operator=(AsyncCallbackScope&&) = delete;
 
  private:
   Environment* env_;
@@ -686,6 +740,9 @@ class ImmediateInfo : public MemoryRetainer {
 
   ImmediateInfo(const ImmediateInfo&) = delete;
   ImmediateInfo& operator=(const ImmediateInfo&) = delete;
+  ImmediateInfo(ImmediateInfo&&) = delete;
+  ImmediateInfo& operator=(ImmediateInfo&&) = delete;
+  ~ImmediateInfo() = default;
 
   SET_MEMORY_INFO_NAME(ImmediateInfo)
   SET_SELF_SIZE(ImmediateInfo)
@@ -712,6 +769,9 @@ class TickInfo : public MemoryRetainer {
 
   TickInfo(const TickInfo&) = delete;
   TickInfo& operator=(const TickInfo&) = delete;
+  TickInfo(TickInfo&&) = delete;
+  TickInfo& operator=(TickInfo&&) = delete;
+  ~TickInfo() = default;
 
  private:
   friend class Environment;  // So we can call the constructor.
@@ -746,6 +806,12 @@ class ShouldNotAbortOnUncaughtScope {
   explicit inline ShouldNotAbortOnUncaughtScope(Environment* env);
   inline void Close();
   inline ~ShouldNotAbortOnUncaughtScope();
+  ShouldNotAbortOnUncaughtScope(const ShouldNotAbortOnUncaughtScope&) = delete;
+  ShouldNotAbortOnUncaughtScope& operator=(
+      const ShouldNotAbortOnUncaughtScope&) = delete;
+  ShouldNotAbortOnUncaughtScope(ShouldNotAbortOnUncaughtScope&&) = delete;
+  ShouldNotAbortOnUncaughtScope& operator=(ShouldNotAbortOnUncaughtScope&&) =
+      delete;
 
  private:
   Environment* env_;
@@ -785,12 +851,27 @@ class Environment : public MemoryRetainer {
  public:
   Environment(const Environment&) = delete;
   Environment& operator=(const Environment&) = delete;
+  Environment(Environment&&) = delete;
+  Environment& operator=(Environment&&) = delete;
 
   SET_MEMORY_INFO_NAME(Environment)
 
   inline size_t SelfSize() const override;
   bool IsRootNode() const override { return true; }
   void MemoryInfo(MemoryTracker* tracker) const override;
+
+  void CreateProperties();
+  // Should be called before InitializeInspector()
+  void InitializeDiagnostics();
+#if HAVE_INSPECTOR && NODE_USE_V8_PLATFORM
+  // If the environment is created for a worker, pass parent_handle and
+  // the ownership if transferred into the Environment.
+  int InitializeInspector(inspector::ParentInspectorHandle* parent_handle);
+#endif
+
+  v8::MaybeLocal<v8::Value> BootstrapInternalLoaders();
+  v8::MaybeLocal<v8::Value> BootstrapNode();
+  v8::MaybeLocal<v8::Value> RunBootstrapping();
 
   inline size_t async_callback_scope_depth() const;
   inline void PushAsyncCallbackScope();
@@ -819,16 +900,16 @@ class Environment : public MemoryRetainer {
 
   Environment(IsolateData* isolate_data,
               v8::Local<v8::Context> context,
+              const std::vector<std::string>& args,
+              const std::vector<std::string>& exec_args,
               Flags flags = Flags(),
               uint64_t thread_id = kNoThreadId);
   ~Environment();
 
   void InitializeLibuv(bool start_profiler_idle_notifier);
-  v8::MaybeLocal<v8::Object> ProcessCliArgs(
-      const std::vector<std::string>& args,
-      const std::vector<std::string>& exec_args);
   inline const std::vector<std::string>& exec_argv();
   inline const std::vector<std::string>& argv();
+  const std::string& exec_path() const;
 
   typedef void (*HandleCleanupCb)(Environment* env,
                                   uv_handle_t* handle,
@@ -885,7 +966,7 @@ class Environment : public MemoryRetainer {
 
   inline IsolateData* isolate_data() const;
 
-  // Utilites that allocate memory using the Isolate's ArrayBuffer::Allocator.
+  // Utilities that allocate memory using the Isolate's ArrayBuffer::Allocator.
   // In particular, using AllocateManaged() will provide a RAII-style object
   // with easy conversion to `Buffer` and `ArrayBuffer` objects.
   inline AllocatedBuffer AllocateManaged(size_t size, bool checked = true);
@@ -927,8 +1008,7 @@ class Environment : public MemoryRetainer {
   std::unordered_map<uint32_t, loader::ModuleWrap*> id_to_module_map;
   std::unordered_map<uint32_t, contextify::ContextifyScript*>
       id_to_script_map;
-  std::unordered_set<CompileFnEntry*> compile_fn_entries;
-  std::unordered_map<uint32_t, v8::Global<v8::Function>> id_to_function_map;
+  std::unordered_map<uint32_t, contextify::CompiledFnEntry*> id_to_function_map;
 
   inline uint32_t get_next_module_id();
   inline uint32_t get_next_script_id();
@@ -942,6 +1022,9 @@ class Environment : public MemoryRetainer {
 
   inline double* heap_space_statistics_buffer() const;
   inline void set_heap_space_statistics_buffer(double* pointer);
+
+  inline double* heap_code_statistics_buffer() const;
+  inline void set_heap_code_statistics_buffer(double* pointer);
 
   inline char* http_parser_buffer() const;
   inline void set_http_parser_buffer(char* buffer);
@@ -1092,15 +1175,15 @@ class Environment : public MemoryRetainer {
     return current_value;
   }
 
-  typedef void (*native_immediate_callback)(Environment* env, void* data);
-  // cb will be called as cb(env, data) on the next event loop iteration.
-  // obj will be kept alive between now and after the callback has run.
-  inline void SetImmediate(native_immediate_callback cb,
-                           void* data,
-                           v8::Local<v8::Object> obj = v8::Local<v8::Object>());
-  inline void SetUnrefImmediate(native_immediate_callback cb,
-                                void* data,
-                                v8::Local<v8::Object> obj =
+  // cb will be called as cb(env) on the next event loop iteration.
+  // keep_alive will be kept alive between now and after the callback has run.
+  template <typename Fn>
+  inline void SetImmediate(Fn&& cb,
+                           v8::Local<v8::Object> keep_alive =
+                               v8::Local<v8::Object>());
+  template <typename Fn>
+  inline void SetUnrefImmediate(Fn&& cb,
+                                v8::Local<v8::Object> keep_alive =
                                     v8::Local<v8::Object>());
   // This needs to be available for the JS-land setImmediate().
   void ToggleImmediateRef(bool ref);
@@ -1143,14 +1226,31 @@ class Environment : public MemoryRetainer {
   inline void set_cpu_prof_name(const std::string& name);
   inline const std::string& cpu_prof_name() const;
 
+  inline void set_cpu_prof_interval(uint64_t interval);
+  inline uint64_t cpu_prof_interval() const;
+
   inline void set_cpu_prof_dir(const std::string& dir);
   inline const std::string& cpu_prof_dir() const;
+
+  void set_heap_profiler_connection(
+      std::unique_ptr<profiler::V8HeapProfilerConnection> connection);
+  profiler::V8HeapProfilerConnection* heap_profiler_connection();
+
+  inline void set_heap_prof_name(const std::string& name);
+  inline const std::string& heap_prof_name() const;
+
+  inline void set_heap_prof_dir(const std::string& dir);
+  inline const std::string& heap_prof_dir() const;
+
+  inline void set_heap_prof_interval(uint64_t interval);
+  inline uint64_t heap_prof_interval() const;
+
 #endif  // HAVE_INSPECTOR
 
  private:
-  inline void CreateImmediate(native_immediate_callback cb,
-                              void* data,
-                              v8::Local<v8::Object> obj,
+  template <typename Fn>
+  inline void CreateImmediate(Fn&& cb,
+                              v8::Local<v8::Object> keep_alive,
                               bool ref);
 
   inline void ThrowError(v8::Local<v8::Value> (*fun)(v8::Local<v8::String>),
@@ -1172,6 +1272,7 @@ class Environment : public MemoryRetainer {
   const uint64_t timer_base_;
   std::shared_ptr<KVStore> env_vars_;
   bool printed_error_ = false;
+  bool trace_sync_io_ = false;
   bool emit_env_nonstring_warning_ = true;
   bool emit_err_name_warning_ = true;
   size_t async_callback_scope_depth_ = 0;
@@ -1183,6 +1284,11 @@ class Environment : public MemoryRetainer {
   std::string coverage_directory_;
   std::string cpu_prof_dir_;
   std::string cpu_prof_name_;
+  uint64_t cpu_prof_interval_;
+  std::unique_ptr<profiler::V8HeapProfilerConnection> heap_profiler_connection_;
+  std::string heap_prof_dir_;
+  std::string heap_prof_name_;
+  uint64_t heap_prof_interval_;
 #endif  // HAVE_INSPECTOR
 
   std::shared_ptr<EnvironmentOptions> options_;
@@ -1196,6 +1302,7 @@ class Environment : public MemoryRetainer {
   std::shared_ptr<HostPort> inspector_host_port_;
   std::vector<std::string> exec_argv_;
   std::vector<std::string> argv_;
+  std::string exec_path_;
 
   uint32_t module_id_counter_ = 0;
   uint32_t script_id_counter_ = 0;
@@ -1242,6 +1349,7 @@ class Environment : public MemoryRetainer {
 
   double* heap_statistics_buffer_ = nullptr;
   double* heap_space_statistics_buffer_ = nullptr;
+  double* heap_code_statistics_buffer_ = nullptr;
 
   char* http_parser_buffer_ = nullptr;
   bool http_parser_buffer_in_use_ = false;
@@ -1267,13 +1375,38 @@ class Environment : public MemoryRetainer {
 
   std::list<ExitCallback> at_exit_functions_;
 
-  struct NativeImmediateCallback {
-    native_immediate_callback cb_;
-    void* data_;
-    v8::Global<v8::Object> keep_alive_;
+  class NativeImmediateCallback {
+   public:
+    explicit inline NativeImmediateCallback(bool refed);
+
+    virtual ~NativeImmediateCallback() = default;
+    virtual void Call(Environment* env) = 0;
+
+    inline bool is_refed() const;
+    inline std::unique_ptr<NativeImmediateCallback> get_next();
+    inline void set_next(std::unique_ptr<NativeImmediateCallback> next);
+
+   private:
     bool refed_;
+    std::unique_ptr<NativeImmediateCallback> next_;
   };
-  std::vector<NativeImmediateCallback> native_immediate_callbacks_;
+
+  template <typename Fn>
+  class NativeImmediateCallbackImpl final : public NativeImmediateCallback {
+   public:
+    NativeImmediateCallbackImpl(Fn&& callback,
+                                v8::Global<v8::Object>&& keep_alive,
+                                bool refed);
+    void Call(Environment* env) override;
+
+   private:
+    Fn callback_;
+    v8::Global<v8::Object> keep_alive_;
+  };
+
+  std::unique_ptr<NativeImmediateCallback> native_immediate_callbacks_head_;
+  NativeImmediateCallback* native_immediate_callbacks_tail_ = nullptr;
+
   void RunAndClearNativeImmediates();
   static void CheckImmediate(uv_check_t* handle);
 

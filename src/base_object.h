@@ -24,7 +24,7 @@
 
 #if defined(NODE_WANT_INTERNALS) && NODE_WANT_INTERNALS
 
-#include "memory_tracker-inl.h"
+#include "memory_tracker.h"
 #include "v8.h"
 #include <type_traits>  // std::remove_reference
 
@@ -82,6 +82,15 @@ class BaseObject : public MemoryRetainer {
   static void InternalFieldSet(v8::Local<v8::String> property,
                                v8::Local<v8::Value> value,
                                const v8::PropertyCallbackInfo<void>& info);
+
+  // This is a bit of a hack. See the override in async_wrap.cc for details.
+  virtual bool IsDoneInitializing() const;
+
+ protected:
+  // Can be used to avoid the automatic object deletion when the Environment
+  // exits, for example when this object is owned and deleted by another
+  // BaseObject at that point.
+  inline void RemoveCleanupHook();
 
  private:
   v8::Local<v8::Object> WrappedObject() const override;

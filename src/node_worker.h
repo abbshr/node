@@ -41,6 +41,7 @@ class Worker : public AsyncWrap {
   SET_SELF_SIZE(Worker)
 
   bool is_stopped() const;
+  std::shared_ptr<ArrayBufferAllocator> array_buffer_allocator();
 
   static void New(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void CloneParentEnvVars(
@@ -52,17 +53,16 @@ class Worker : public AsyncWrap {
   static void Unref(const v8::FunctionCallbackInfo<v8::Value>& args);
 
  private:
-  void OnThreadStopped();
   void CreateEnvMessagePort(Environment* env);
-  const std::string url_;
 
   std::shared_ptr<PerIsolateOptions> per_isolate_opts_;
   std::vector<std::string> exec_argv_;
   std::vector<std::string> argv_;
 
   MultiIsolatePlatform* platform_;
+  std::shared_ptr<ArrayBufferAllocator> array_buffer_allocator_;
   v8::Isolate* isolate_ = nullptr;
-  bool profiler_idle_notifier_started_;
+  bool start_profiler_idle_notifier_;
   uv_thread_t tid_;
 
 #if NODE_USE_V8_PLATFORM && HAVE_INSPECTOR

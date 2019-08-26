@@ -22,21 +22,21 @@ const child = fork(__filename, ['test'], {
   execArgv: ['--trace-tls']
 });
 
+let stdout = '';
 let stderr = '';
+child.stdout.setEncoding('utf8');
 child.stderr.setEncoding('utf8');
+child.stdout.on('data', (data) => stdout += data);
 child.stderr.on('data', (data) => stderr += data);
-child.on('close', common.mustCall(() => {
-  assert(/Warning: Enabling --trace-tls can expose sensitive/.test(stderr));
-  assert(/Received Record/.test(stderr));
-  assert(/ClientHello/.test(stderr));
-}));
+child.on('close', common.mustCall((code, signal) => {
+  // For debugging and observation of actual trace output.
+  console.log(stderr);
 
-// For debugging and observation of actual trace output.
-child.stderr.pipe(process.stderr);
-child.stdout.pipe(process.stdout);
-
-child.on('exit', common.mustCall((code) => {
   assert.strictEqual(code, 0);
+  assert.strictEqual(signal, null);
+  assert.strictEqual(stdout.trim(), '');
+  assert(/Warning: Enabling --trace-tls can expose sensitive/.test(stderr));
+  assert(/Sent Record/.test(stderr));
 }));
 
 function test() {
@@ -54,6 +54,15 @@ function test() {
       key: keys.agent6.key
     },
   }, common.mustCall((err, pair, cleanup) => {
+    if (pair.server.err) {
+      console.trace('server', pair.server.err);
+    }
+    if (pair.client.err) {
+      console.trace('client', pair.client.err);
+    }
+    assert.ifError(pair.server.err);
+    assert.ifError(pair.client.err);
+
     return cleanup();
   }));
 }

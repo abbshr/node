@@ -50,6 +50,11 @@ class Options {
   virtual ~Options() = default;
 };
 
+struct InspectPublishUid {
+  bool console;
+  bool http;
+};
+
 // These options are currently essentially per-Environment, but it can be nice
 // to keep them separate since they are a group of options applying to a very
 // specific part of Node. It might also make more sense for them to be
@@ -70,6 +75,10 @@ class DebugOptions : public Options {
   bool break_first_line = false;
   // --inspect-brk-node
   bool break_node_first_line = false;
+  // --inspect-publish-uid
+  std::string inspect_publish_uid_string = "stderr,http";
+
+  InspectPublishUid inspect_publish_uid;
 
   enum { kDefaultInspectorPort = 9229 };
 
@@ -91,11 +100,14 @@ class DebugOptions : public Options {
 class EnvironmentOptions : public Options {
  public:
   bool abort_on_uncaught_exception = false;
-  bool experimental_json_modules = false;
+  bool experimental_exports = false;
   bool experimental_modules = false;
   std::string es_module_specifier_resolution;
+  bool experimental_wasm_modules = false;
   std::string module_type;
   std::string experimental_policy;
+  std::string experimental_policy_integrity;
+  bool has_policy_integrity_string;
   bool experimental_repl_await = false;
   bool experimental_vm_modules = false;
   bool expose_internals = false;
@@ -111,8 +123,15 @@ class EnvironmentOptions : public Options {
   bool prof_process = false;
 #if HAVE_INSPECTOR
   std::string cpu_prof_dir;
+  static const uint64_t kDefaultCpuProfInterval = 1000;
+  uint64_t cpu_prof_interval = kDefaultCpuProfInterval;
   std::string cpu_prof_name;
   bool cpu_prof = false;
+  std::string heap_prof_dir;
+  std::string heap_prof_name;
+  static const uint64_t kDefaultHeapProfInterval = 512 * 1024;
+  uint64_t heap_prof_interval = kDefaultHeapProfInterval;
+  bool heap_prof = false;
 #endif  // HAVE_INSPECTOR
   std::string redirect_warnings;
   bool throw_deprecation = false;
@@ -155,6 +174,7 @@ class PerIsolateOptions : public Options {
  public:
   std::shared_ptr<EnvironmentOptions> per_env { new EnvironmentOptions() };
   bool track_heap_objects = false;
+  bool no_node_snapshot = false;
 
 #ifdef NODE_REPORT
   bool report_uncaught_exception = false;

@@ -7,13 +7,12 @@
 #include "src/builtins/builtins-constructor-gen.h"
 #include "src/builtins/builtins-iterator-gen.h"
 #include "src/builtins/builtins-utils-gen.h"
-#include "src/code-stub-assembler.h"
+#include "src/codegen/code-stub-assembler.h"
 #include "src/heap/factory-inl.h"
 #include "src/heap/heap-inl.h"
 #include "src/objects/hash-table-inl.h"
 #include "src/objects/js-collection.h"
-#include "torque-generated/builtins-base-from-dsl-gen.h"
-#include "torque-generated/builtins-collections-from-dsl-gen.h"
+#include "src/objects/ordered-hash-table.h"
 
 namespace v8 {
 namespace internal {
@@ -24,11 +23,10 @@ using TNode = compiler::TNode<T>;
 template <class T>
 using TVariable = compiler::TypedCodeAssemblerVariable<T>;
 
-class BaseCollectionsAssembler : public CodeStubAssembler,
-                                 public CollectionsBuiltinsFromDSLAssembler {
+class BaseCollectionsAssembler : public CodeStubAssembler {
  public:
   explicit BaseCollectionsAssembler(compiler::CodeAssemblerState* state)
-      : CodeStubAssembler(state), CollectionsBuiltinsFromDSLAssembler(state) {}
+      : CodeStubAssembler(state) {}
 
   virtual ~BaseCollectionsAssembler() = default;
 
@@ -68,19 +66,19 @@ class BaseCollectionsAssembler : public CodeStubAssembler,
                                          TNode<Object> iterable);
 
   // Constructs a collection instance. Choosing a fast path when possible.
-  TNode<Object> AllocateJSCollection(TNode<Context> context,
-                                     TNode<JSFunction> constructor,
-                                     TNode<Object> new_target);
+  TNode<JSObject> AllocateJSCollection(TNode<Context> context,
+                                       TNode<JSFunction> constructor,
+                                       TNode<JSReceiver> new_target);
 
   // Fast path for constructing a collection instance if the constructor
   // function has not been modified.
-  TNode<Object> AllocateJSCollectionFast(TNode<HeapObject> constructor);
+  TNode<JSObject> AllocateJSCollectionFast(TNode<JSFunction> constructor);
 
   // Fallback for constructing a collection instance if the constructor function
   // has been modified.
-  TNode<Object> AllocateJSCollectionSlow(TNode<Context> context,
-                                         TNode<JSFunction> constructor,
-                                         TNode<Object> new_target);
+  TNode<JSObject> AllocateJSCollectionSlow(TNode<Context> context,
+                                           TNode<JSFunction> constructor,
+                                           TNode<JSReceiver> new_target);
 
   // Allocates the backing store for a collection.
   virtual TNode<Object> AllocateTable(Variant variant, TNode<Context> context,
@@ -157,7 +155,7 @@ void BaseCollectionsAssembler::AddConstructorEntry(
                                                         var_exception);
   CSA_ASSERT(this, Word32BinaryNot(IsTheHole(key_value)));
   if (variant == kMap || variant == kWeakMap) {
-    BaseBuiltinsFromDSLAssembler::KeyValuePair pair =
+    TorqueStructKeyValuePair pair =
         if_may_have_side_effects != nullptr
             ? LoadKeyValuePairNoSideEffects(context, key_value,
                                             if_may_have_side_effects)
@@ -317,22 +315,22 @@ void BaseCollectionsAssembler::AddConstructorEntriesFromIterable(
 
   TNode<Object> add_func = GetAddFunction(variant, context, collection);
   IteratorBuiltinsAssembler iterator_assembler(this->state());
-  IteratorBuiltinsAssembler::IteratorRecord iterator =
+  TorqueStructIteratorRecord iterator =
       iterator_assembler.GetIterator(context, iterable);
 
   CSA_ASSERT(this, Word32BinaryNot(IsUndefined(iterator.object)));
 
-  TNode<Object> fast_iterator_result_map =
-      LoadContextElement(native_context, Context::ITERATOR_RESULT_MAP_INDEX);
+  TNode<Map> fast_iterator_result_map = CAST(
+      LoadContextElement(native_context, Context::ITERATOR_RESULT_MAP_INDEX));
   TVARIABLE(Object, var_exception);
 
   Goto(&loop);
   BIND(&loop);
   {
-    TNode<Object> next = iterator_assembler.IteratorStep(
+    TNode<JSReceiver> next = iterator_assembler.IteratorStep(
         context, iterator, &exit, fast_iterator_result_map);
-    TNode<Object> next_value = CAST(iterator_assembler.IteratorValue(
-        context, next, fast_iterator_result_map));
+    TNode<Object> next_value = iterator_assembler.IteratorValue(
+        context, next, fast_iterator_result_map);
     AddConstructorEntry(variant, context, collection, add_func, next_value,
                         nullptr, &if_exception, &var_exception);
     Goto(&loop);
@@ -369,33 +367,33 @@ void BaseCollectionsAssembler::GotoIfInitialAddFunctionModified(
       GetAddFunctionNameIndex(variant), if_modified);
 }
 
-TNode<Object> BaseCollectionsAssembler::AllocateJSCollection(
+TNode<JSObject> BaseCollectionsAssembler::AllocateJSCollection(
     TNode<Context> context, TNode<JSFunction> constructor,
-    TNode<Object> new_target) {
+    TNode<JSReceiver> new_target) {
   TNode<BoolT> is_target_unmodified = WordEqual(constructor, new_target);
 
-  return Select<Object>(is_target_unmodified,
-                        [=] { return AllocateJSCollectionFast(constructor); },
-                        [=] {
-                          return AllocateJSCollectionSlow(context, constructor,
-                                                          new_target);
-                        });
+  return Select<JSObject>(
+      is_target_unmodified,
+      [=] { return AllocateJSCollectionFast(constructor); },
+      [=] {
+        return AllocateJSCollectionSlow(context, constructor, new_target);
+      });
 }
 
-TNode<Object> BaseCollectionsAssembler::AllocateJSCollectionFast(
-    TNode<HeapObject> constructor) {
+TNode<JSObject> BaseCollectionsAssembler::AllocateJSCollectionFast(
+    TNode<JSFunction> constructor) {
   CSA_ASSERT(this, IsConstructorMap(LoadMap(constructor)));
-  TNode<Object> initial_map =
-      LoadObjectField(constructor, JSFunction::kPrototypeOrInitialMapOffset);
-  return CAST(AllocateJSObjectFromMap(initial_map));
+  TNode<Map> initial_map =
+      CAST(LoadJSFunctionPrototypeOrInitialMap(constructor));
+  return AllocateJSObjectFromMap(initial_map);
 }
 
-TNode<Object> BaseCollectionsAssembler::AllocateJSCollectionSlow(
+TNode<JSObject> BaseCollectionsAssembler::AllocateJSCollectionSlow(
     TNode<Context> context, TNode<JSFunction> constructor,
-    TNode<Object> new_target) {
+    TNode<JSReceiver> new_target) {
   ConstructorBuiltinsAssembler constructor_assembler(this->state());
-  return CAST(constructor_assembler.EmitFastNewObject(context, constructor,
-                                                      new_target));
+  return constructor_assembler.EmitFastNewObject(context, constructor,
+                                                 new_target);
 }
 
 void BaseCollectionsAssembler::GenerateConstructor(
@@ -410,7 +408,7 @@ void BaseCollectionsAssembler::GenerateConstructor(
 
   TNode<Context> native_context = LoadNativeContext(context);
   TNode<Object> collection = AllocateJSCollection(
-      context, GetConstructor(variant, native_context), new_target);
+      context, GetConstructor(variant, native_context), CAST(new_target));
 
   AddConstructorEntries(variant, context, native_context, collection, iterable);
   Return(collection);
@@ -597,8 +595,8 @@ class CollectionsBuiltinsAssembler : public BaseCollectionsAssembler {
 
   // Transitions the iterator to the non obsolete backing store.
   // This is a NOP if the [table] is not obsolete.
-  typedef std::function<void(Node* const table, Node* const index)>
-      UpdateInTransition;
+  using UpdateInTransition =
+      std::function<void(Node* const table, Node* const index)>;
   template <typename TableType>
   std::pair<TNode<TableType>, TNode<IntPtrT>> Transition(
       TNode<TableType> const table, TNode<IntPtrT> const index,
@@ -759,8 +757,9 @@ Node* CollectionsBuiltinsAssembler::CallGetOrCreateHashRaw(Node* const key) {
   MachineType type_ptr = MachineType::Pointer();
   MachineType type_tagged = MachineType::AnyTagged();
 
-  Node* const result = CallCFunction2(type_tagged, type_ptr, type_tagged,
-                                      function_addr, isolate_ptr, key);
+  Node* const result = CallCFunction(function_addr, type_tagged,
+                                     std::make_pair(type_ptr, isolate_ptr),
+                                     std::make_pair(type_tagged, key));
 
   return result;
 }
@@ -774,8 +773,10 @@ Node* CollectionsBuiltinsAssembler::CallGetHashRaw(Node* const key) {
   MachineType type_ptr = MachineType::Pointer();
   MachineType type_tagged = MachineType::AnyTagged();
 
-  Node* const result = CallCFunction2(type_tagged, type_ptr, type_tagged,
-                                      function_addr, isolate_ptr, key);
+  Node* const result = CallCFunction(function_addr, type_tagged,
+                                     std::make_pair(type_ptr, isolate_ptr),
+                                     std::make_pair(type_tagged, key));
+
   return SmiUntag(result);
 }
 
@@ -826,7 +827,7 @@ void CollectionsBuiltinsAssembler::SameValueZeroSmi(Node* key_smi,
 void CollectionsBuiltinsAssembler::BranchIfMapIteratorProtectorValid(
     Label* if_true, Label* if_false) {
   Node* protector_cell = LoadRoot(RootIndex::kMapIteratorProtector);
-  DCHECK(isolate()->heap()->map_iterator_protector()->IsPropertyCell());
+  DCHECK(isolate()->heap()->map_iterator_protector().IsPropertyCell());
   Branch(WordEqual(LoadObjectField(protector_cell, PropertyCell::kValueOffset),
                    SmiConstant(Isolate::kProtectorValid)),
          if_true, if_false);
@@ -883,7 +884,7 @@ void BranchIfIterableWithOriginalKeyOrValueMapIterator(
 void CollectionsBuiltinsAssembler::BranchIfSetIteratorProtectorValid(
     Label* if_true, Label* if_false) {
   Node* const protector_cell = LoadRoot(RootIndex::kSetIteratorProtector);
-  DCHECK(isolate()->heap()->set_iterator_protector()->IsPropertyCell());
+  DCHECK(isolate()->heap()->set_iterator_protector().IsPropertyCell());
   Branch(WordEqual(LoadObjectField(protector_cell, PropertyCell::kValueOffset),
                    SmiConstant(Isolate::kProtectorValid)),
          if_true, if_false);
@@ -1572,8 +1573,8 @@ void CollectionsBuiltinsAssembler::StoreOrderedHashMapNewEntry(
     Node* const hash, Node* const number_of_buckets, Node* const occupancy) {
   Node* const bucket =
       WordAnd(hash, IntPtrSub(number_of_buckets, IntPtrConstant(1)));
-  Node* const bucket_entry = UnsafeLoadFixedArrayElement(
-      table, bucket, OrderedHashMap::HashTableStartIndex() * kTaggedSize);
+  TNode<Smi> bucket_entry = CAST(UnsafeLoadFixedArrayElement(
+      table, bucket, OrderedHashMap::HashTableStartIndex() * kTaggedSize));
 
   // Store the entry elements.
   Node* const entry_start = IntPtrAdd(
@@ -1746,8 +1747,8 @@ void CollectionsBuiltinsAssembler::StoreOrderedHashSetNewEntry(
     Node* const number_of_buckets, Node* const occupancy) {
   Node* const bucket =
       WordAnd(hash, IntPtrSub(number_of_buckets, IntPtrConstant(1)));
-  Node* const bucket_entry = UnsafeLoadFixedArrayElement(
-      table, bucket, OrderedHashSet::HashTableStartIndex() * kTaggedSize);
+  TNode<Smi> bucket_entry = CAST(UnsafeLoadFixedArrayElement(
+      table, bucket, OrderedHashSet::HashTableStartIndex() * kTaggedSize));
 
   // Store the entry elements.
   Node* const entry_start = IntPtrAdd(
@@ -2295,8 +2296,8 @@ class WeakCollectionsBuiltinsAssembler : public BaseCollectionsAssembler {
   // Builds code that finds the EphemeronHashTable entry for a {key} using the
   // comparison code generated by {key_compare}. The key index is returned if
   // the {key} is found.
-  typedef std::function<void(TNode<Object> entry_key, Label* if_same)>
-      KeyComparator;
+  using KeyComparator =
+      std::function<void(TNode<Object> entry_key, Label* if_same)>;
   TNode<IntPtrT> FindKeyIndex(TNode<HeapObject> table, TNode<IntPtrT> key_hash,
                               TNode<IntPtrT> entry_mask,
                               const KeyComparator& key_compare);
@@ -2341,7 +2342,8 @@ void WeakCollectionsBuiltinsAssembler::AddEntry(
     TNode<Object> key, TNode<Object> value, TNode<IntPtrT> number_of_elements) {
   // See EphemeronHashTable::AddEntry().
   TNode<IntPtrT> value_index = ValueIndexFromKeyIndex(key_index);
-  UnsafeStoreFixedArrayElement(table, key_index, key);
+  UnsafeStoreFixedArrayElement(table, key_index, key,
+                               UPDATE_EPHEMERON_KEY_WRITE_BARRIER);
   UnsafeStoreFixedArrayElement(table, value_index, value);
 
   // See HashTableBase::ElementAdded().
@@ -2389,8 +2391,9 @@ TNode<Smi> WeakCollectionsBuiltinsAssembler::CreateIdentityHash(
   MachineType type_ptr = MachineType::Pointer();
   MachineType type_tagged = MachineType::AnyTagged();
 
-  return CAST(CallCFunction2(type_tagged, type_ptr, type_tagged, function_addr,
-                             isolate_ptr, key));
+  return CAST(CallCFunction(function_addr, type_tagged,
+                            std::make_pair(type_ptr, isolate_ptr),
+                            std::make_pair(type_tagged, key)));
 }
 
 TNode<IntPtrT> WeakCollectionsBuiltinsAssembler::EntryMask(
@@ -2611,7 +2614,7 @@ TF_BUILTIN(WeakMapGet, WeakCollectionsBuiltinsAssembler) {
   Return(UndefinedConstant());
 }
 
-TF_BUILTIN(WeakMapHas, WeakCollectionsBuiltinsAssembler) {
+TF_BUILTIN(WeakMapPrototypeHas, WeakCollectionsBuiltinsAssembler) {
   Node* const receiver = Parameter(Descriptor::kReceiver);
   Node* const key = Parameter(Descriptor::kKey);
   Node* const context = Parameter(Descriptor::kContext);
@@ -2775,7 +2778,7 @@ TF_BUILTIN(WeakSetPrototypeDelete, CodeStubAssembler) {
       CallBuiltin(Builtins::kWeakCollectionDelete, context, receiver, value));
 }
 
-TF_BUILTIN(WeakSetHas, WeakCollectionsBuiltinsAssembler) {
+TF_BUILTIN(WeakSetPrototypeHas, WeakCollectionsBuiltinsAssembler) {
   Node* const receiver = Parameter(Descriptor::kReceiver);
   Node* const key = Parameter(Descriptor::kKey);
   Node* const context = Parameter(Descriptor::kContext);

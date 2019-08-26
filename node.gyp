@@ -21,7 +21,6 @@
     'node_use_openssl%': 'true',
     'node_shared_openssl%': 'false',
     'node_v8_options%': '',
-    'node_enable_v8_vtunejit%': 'false',
     'node_core_target_name%': 'node',
     'node_lib_target_name%': 'libnode',
     'node_intermediate_lib_type%': 'static_library',
@@ -125,6 +124,7 @@
       'lib/internal/freeze_intrinsics.js',
       'lib/internal/fs/promises.js',
       'lib/internal/fs/read_file_context.js',
+      'lib/internal/fs/rimraf.js',
       'lib/internal/fs/streams.js',
       'lib/internal/fs/sync_write_stream.js',
       'lib/internal/fs/utils.js',
@@ -170,7 +170,7 @@
       'lib/internal/process/report.js',
       'lib/internal/process/task_queues.js',
       'lib/internal/querystring.js',
-      'lib/internal/readline.js',
+      'lib/internal/readline/utils.js',
       'lib/internal/repl.js',
       'lib/internal/repl/await.js',
       'lib/internal/repl/history.js',
@@ -184,7 +184,6 @@
       'lib/internal/url.js',
       'lib/internal/util.js',
       'lib/internal/util/comparisons.js',
-      'lib/internal/util/print.js',
       'lib/internal/util/debuglog.js',
       'lib/internal/util/inspect.js',
       'lib/internal/util/inspector.js',
@@ -224,7 +223,6 @@
       'deps/node-inspect/lib/internal/inspect_repl.js',
       'deps/acorn/acorn/dist/acorn.js',
       'deps/acorn/acorn-walk/dist/walk.js',
-      'deps/acorn-plugins/acorn-bigint/index.js',
       'deps/acorn-plugins/acorn-class-fields/index.js',
       'deps/acorn-plugins/acorn-numeric-separator/index.js',
       'deps/acorn-plugins/acorn-private-class-elements/index.js',
@@ -283,6 +281,17 @@
         'ImageHasSafeExceptionHandlers': 'false',
       },
     },
+
+    'conditions': [
+      ['OS=="aix"', {
+        'ldflags': [
+          '-Wl,-bnoerrmsg',
+        ],
+      }],
+      ['(OS=="linux" or OS=="mac") and llvm_version!=0', {
+        'libraries': ['-latomic'],
+      }],
+    ],
   },
 
   'targets': [
@@ -337,22 +346,24 @@
         [ 'node_intermediate_lib_type=="static_library" and node_shared=="false"', {
           'xcode_settings': {
             'OTHER_LDFLAGS': [
-              '-Wl,-force_load,<(PRODUCT_DIR)/<(STATIC_LIB_PREFIX)'
-                  '<(node_core_target_name)<(STATIC_LIB_SUFFIX)',
+              '-Wl,-force_load,<(PRODUCT_DIR)/<(STATIC_LIB_PREFIX)<(node_core_target_name)<(STATIC_LIB_SUFFIX)',
+              '-Wl,-force_load,<(PRODUCT_DIR)/<(STATIC_LIB_PREFIX)v8_base_without_compiler<(STATIC_LIB_SUFFIX)',
             ],
           },
           'msvs_settings': {
             'VCLinkerTool': {
               'AdditionalOptions': [
                 '/WHOLEARCHIVE:<(node_lib_target_name)<(STATIC_LIB_SUFFIX)',
+                '/WHOLEARCHIVE:<(STATIC_LIB_PREFIX)v8_base_without_compiler<(STATIC_LIB_SUFFIX)',
               ],
             },
           },
           'conditions': [
-            ['OS!="aix"', {
+            ['OS != "aix" and OS != "mac"', {
               'ldflags': [
-                '-Wl,--whole-archive,<(obj_dir)/<(STATIC_LIB_PREFIX)'
-                    '<(node_core_target_name)<(STATIC_LIB_SUFFIX)',
+                '-Wl,--whole-archive',
+                '<(obj_dir)/<(STATIC_LIB_PREFIX)<(node_core_target_name)<(STATIC_LIB_SUFFIX)',
+                '<(obj_dir)/tools/v8_gypfiles/<(STATIC_LIB_PREFIX)v8_base_without_compiler<(STATIC_LIB_SUFFIX)',
                 '-Wl,--no-whole-archive',
               ],
             }],
@@ -379,10 +390,12 @@
             'NODE_ARCH="<(target_arch)"',
             'NODE_PLATFORM="<(OS)"',
           ],
-          'conditions': [
-            ['OS=="win"', {
-              'libraries': [ 'Ws2_32' ],
-            }],
+        }],
+        ['OS=="win"', {
+          'libraries': [
+            'Dbghelp.lib',
+            'winmm.lib',
+            'Ws2_32.lib',
           ],
         }],
         ['node_with_ltcg=="true"', {
@@ -674,6 +687,12 @@
       'msvs_disabled_warnings!': [4244],
 
       'conditions': [
+        [ 'node_shared=="true"', {
+          'sources': [
+            'src/node_snapshot_stub.cc',
+            'src/node_code_cache_stub.cc',
+          ]
+        }],
         [ 'node_shared=="true" and node_module_version!="" and OS!="win"', {
           'product_extension': '<(shlib_suffix)',
           'xcode_settings': {
@@ -799,7 +818,7 @@
             }],
           ],
         }],
-        [ 'node_use_large_pages=="true" and OS=="linux"', {
+        [ 'node_use_large_pages=="true" and OS in "linux freebsd mac"', {
           'defines': [ 'NODE_ENABLE_LARGE_CODE_PAGES=1' ],
           # The current implementation of Large Pages is under Linux.
           # Other implementations are possible but not currently supported.
@@ -816,7 +835,7 @@
               # Categories to export.
               '-CAES,BF,BIO,DES,DH,DSA,EC,ECDH,ECDSA,ENGINE,EVP,HMAC,MD4,MD5,'
               'PSK,RC2,RC4,RSA,SHA,SHA0,SHA1,SHA256,SHA512,SOCK,STDIO,TLSEXT,'
-              'FP_API,TLS1_METHOD,TLS1_1_METHOD,TLS1_2_METHOD,SCRYPT,OCSP,'
+              'UI,FP_API,TLS1_METHOD,TLS1_1_METHOD,TLS1_2_METHOD,SCRYPT,OCSP,'
               'NEXTPROTONEG,RMD160,CAST,DEPRECATEDIN_1_1_0,DEPRECATEDIN_1_2_0',
               # Defines.
               '-DWIN32',
@@ -859,6 +878,8 @@
           'action_name': 'node_js2c',
           'process_outputs_as_sources': 1,
           'inputs': [
+            # Put the code first so it's a dependency and can be used for invocation.
+            'tools/js2c.py',
             '<@(library_files)',
             'config.gypi',
             'tools/js2c_macros/check_macros.py'
@@ -878,9 +899,8 @@
             }]
           ],
           'action': [
-            'python', 'tools/js2c.py',
-            '<@(_outputs)',
-            '<@(_inputs)',
+            'python', '<@(_inputs)',
+            '--target', '<@(_outputs)',
           ],
         },
       ],
@@ -978,7 +998,7 @@
             {
               'action_name': 'node_dtrace_ustack_constants',
               'inputs': [
-                '<(v8_base)'
+                '<(obj_dir)/tools/v8_gypfiles/<(STATIC_LIB_PREFIX)v8_base_without_compiler<(STATIC_LIB_SUFFIX)'
               ],
               'outputs': [
                 '<(SHARED_INTERMEDIATE_DIR)/v8constants.h'
@@ -1082,8 +1102,8 @@
         'test/cctest/test_node_postmortem_metadata.cc',
         'test/cctest/test_environment.cc',
         'test/cctest/test_linked_binding.cc',
+        'test/cctest/test_per_process.cc',
         'test/cctest/test_platform.cc',
-        'test/cctest/test_report_util.cc',
         'test/cctest/test_traced_value.cc',
         'test/cctest/test_util.cc',
         'test/cctest/test_url.cc',
@@ -1121,6 +1141,9 @@
           },
         }],
         [ 'node_report=="true"', {
+          'sources': [
+            'test/cctest/test_report_util.cc',
+          ],
           'defines': [
             'NODE_REPORT',
             'NODE_ARCH="<(target_arch)"',
@@ -1132,8 +1155,16 @@
             }],
           ],
         }],
+        ['OS=="win"', {
+          'libraries': [
+            'Dbghelp.lib',
+            'winmm.lib',
+            'Ws2_32.lib',
+          ],
+        }],
       ],
     }, # cctest
+
     # TODO(joyeecheung): do not depend on node_lib,
     # instead create a smaller static library node_lib_base that does
     # just enough for node_native_module.cc and the cache builder to
@@ -1173,20 +1204,12 @@
       ],
 
       'conditions': [
-        [ 'node_report=="true"', {
-          'conditions': [
-            ['OS=="win"', {
-              'libraries': [
-                'dbghelp.lib',
-                'PsApi.lib',
-                'Ws2_32.lib',
-              ],
-              'dll_files': [
-                'dbghelp.dll',
-                'PsApi.dll',
-                'Ws2_32.dll',
-              ],
-            }],
+        ['OS=="win"', {
+          'libraries': [
+            'dbghelp.lib',
+            'PsApi.lib',
+            'winmm.lib',
+            'Ws2_32.lib',
           ],
         }],
       ],
@@ -1223,11 +1246,11 @@
       ],
 
       'conditions': [
-        [ 'node_report=="true"', {
-          'conditions': [
-            ['OS=="win"', {
-              'libraries': [ 'Ws2_32' ],
-            }],
+        ['OS=="win"', {
+          'libraries': [
+            'Dbghelp.lib',
+            'winmm.lib',
+            'Ws2_32.lib',
           ],
         }],
       ],

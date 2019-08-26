@@ -11,8 +11,9 @@
 
 #include "src/base/hashmap.h"
 #include "src/base/logging.h"
-#include "src/globals.h"
+#include "src/common/globals.h"
 #include "src/zone/accounting-allocator.h"
+#include "src/zone/zone-segment.h"
 
 #ifndef ZONE_NAME
 #define STRINGIFY(x) #x
@@ -36,12 +37,9 @@ namespace internal {
 // Note: The implementation is inherently not thread safe. Do not use
 // from multi-threaded code.
 
-enum class SegmentSize { kLarge, kDefault };
-
 class V8_EXPORT_PRIVATE Zone final {
  public:
-  Zone(AccountingAllocator* allocator, const char* name,
-       SegmentSize segment_size = SegmentSize::kDefault);
+  Zone(AccountingAllocator* allocator, const char* name);
   ~Zone();
 
   // Allocate 'size' bytes of memory in the Zone; expands the Zone by
@@ -101,7 +99,7 @@ class V8_EXPORT_PRIVATE Zone final {
   static const size_t kMinimumSegmentSize = 8 * KB;
 
   // Never allocate segments larger than this size in bytes.
-  static const size_t kMaximumSegmentSize = 1 * MB;
+  static const size_t kMaximumSegmentSize = 32 * KB;
 
   // Report zone excess when allocation exceeds this limit.
   static const size_t kExcessLimit = 256 * MB;
@@ -135,7 +133,6 @@ class V8_EXPORT_PRIVATE Zone final {
   Segment* segment_head_;
   const char* name_;
   bool sealed_;
-  SegmentSize segment_size_;
 };
 
 // ZoneObject is an abstraction that helps define classes of objects
@@ -215,7 +212,7 @@ class ZoneList final {
   inline T& last() const { return at(length_ - 1); }
   inline T& first() const { return at(0); }
 
-  typedef T* iterator;
+  using iterator = T*;
   inline iterator begin() const { return &data_[0]; }
   inline iterator end() const { return &data_[length_]; }
 
@@ -387,16 +384,24 @@ class ScopedPtrList final {
     end_ += list.length();
   }
 
+  using iterator = T**;
+  inline iterator begin() const {
+    return reinterpret_cast<T**>(buffer_.data() + start_);
+  }
+  inline iterator end() const {
+    return reinterpret_cast<T**>(buffer_.data() + end_);
+  }
+
  private:
   std::vector<void*>& buffer_;
   size_t start_;
   size_t end_;
 };
 
-typedef base::PointerTemplateHashMapImpl<ZoneAllocationPolicy> ZoneHashMap;
+using ZoneHashMap = base::PointerTemplateHashMapImpl<ZoneAllocationPolicy>;
 
-typedef base::CustomMatcherTemplateHashMapImpl<ZoneAllocationPolicy>
-    CustomMatcherZoneHashMap;
+using CustomMatcherZoneHashMap =
+    base::CustomMatcherTemplateHashMapImpl<ZoneAllocationPolicy>;
 
 }  // namespace internal
 }  // namespace v8

@@ -4,8 +4,8 @@
 
 #include "src/wasm/jump-table-assembler.h"
 
-#include "src/assembler-inl.h"
-#include "src/macro-assembler-inl.h"
+#include "src/codegen/assembler-inl.h"
+#include "src/codegen/macro-assembler-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -16,28 +16,9 @@ namespace wasm {
 #if V8_TARGET_ARCH_X64
 void JumpTableAssembler::EmitLazyCompileJumpSlot(uint32_t func_index,
                                                  Address lazy_compile_target) {
-  // TODO(clemensh): Try more efficient sequences.
-  // Alternative 1:
-  // [header]:  mov r10, [lazy_compile_target]
-  //            jmp r10
-  // [slot 0]:  push [0]
-  //            jmp [header]  // pc-relative --> slot size: 10 bytes
-  //
-  // Alternative 2:
-  // [header]:  lea r10, [rip - [header]]
-  //            shr r10, 3  // compute index from offset
-  //            push r10
-  //            mov r10, [lazy_compile_target]
-  //            jmp r10
-  // [slot 0]:  call [header]
-  //            ret   // -> slot size: 5 bytes
-
   // Use a push, because mov to an extended register takes 6 bytes.
-  pushq(Immediate(func_index));                           // max 5 bytes
-  movq(kScratchRegister, uint64_t{lazy_compile_target});  // max 10 bytes
-  jmp(kScratchRegister);                                  // 3 bytes
-
-  PatchConstPool();  // force patching entries for partial const pool
+  pushq_imm32(func_index);            // 5 bytes
+  EmitJumpSlot(lazy_compile_target);  // 5 bytes
 }
 
 void JumpTableAssembler::EmitRuntimeStubSlot(Address builtin_target) {
@@ -45,8 +26,12 @@ void JumpTableAssembler::EmitRuntimeStubSlot(Address builtin_target) {
 }
 
 void JumpTableAssembler::EmitJumpSlot(Address target) {
-  movq(kScratchRegister, static_cast<uint64_t>(target));
-  jmp(kScratchRegister);
+  // On x64, all code is allocated within a single code section, so we can use
+  // relative jumps.
+  static_assert(kMaxWasmCodeMemory <= size_t{2} * GB, "can use relative jump");
+  intptr_t displacement = static_cast<intptr_t>(
+      reinterpret_cast<byte*>(target) - pc_ - kNearJmpInstrSize);
+  near_jmp(displacement, RelocInfo::NONE);
 }
 
 void JumpTableAssembler::NopBytes(int bytes) {
@@ -58,7 +43,7 @@ void JumpTableAssembler::NopBytes(int bytes) {
 void JumpTableAssembler::EmitLazyCompileJumpSlot(uint32_t func_index,
                                                  Address lazy_compile_target) {
   mov(kWasmCompileLazyFuncIndexRegister, func_index);  // 5 bytes
-  jmp(lazy_compile_target, RelocInfo::NONE);  // 5 bytes
+  jmp(lazy_compile_target, RelocInfo::NONE);           // 5 bytes
 }
 
 void JumpTableAssembler::EmitRuntimeStubSlot(Address builtin_target) {
@@ -112,19 +97,26 @@ void JumpTableAssembler::NopBytes(int bytes) {
 #elif V8_TARGET_ARCH_ARM64
 void JumpTableAssembler::EmitLazyCompileJumpSlot(uint32_t func_index,
                                                  Address lazy_compile_target) {
-  Mov(kWasmCompileLazyFuncIndexRegister.W(), func_index);  // max. 2 instr
-  Jump(lazy_compile_target, RelocInfo::NONE);  // 1 instr
+  int start = pc_offset();
+  Mov(kWasmCompileLazyFuncIndexRegister.W(), func_index);  // 1-2 instr
+  Jump(lazy_compile_target, RelocInfo::NONE);              // 1 instr
+  int nop_bytes = start + kLazyCompileTableSlotSize - pc_offset();
+  DCHECK(nop_bytes == 0 || nop_bytes == kInstrSize);
+  if (nop_bytes) nop();
 }
 
 void JumpTableAssembler::EmitRuntimeStubSlot(Address builtin_target) {
   JumpToInstructionStream(builtin_target);
-  CheckConstPool(true, false);  // force emit of const pool
+  ForceConstantPoolEmissionWithoutJump();
 }
 
 void JumpTableAssembler::EmitJumpSlot(Address target) {
   // TODO(wasm): Currently this is guaranteed to be a {near_call} and hence is
   // patchable concurrently. Once {kMaxWasmCodeMemory} is raised on ARM64, make
   // sure concurrent patching is still supported.
+  DCHECK(TurboAssembler::IsNearCallOffset(
+      (reinterpret_cast<byte*>(target) - pc_) / kInstrSize));
+
   Jump(target, RelocInfo::NONE);
 }
 
@@ -166,10 +158,14 @@ void JumpTableAssembler::NopBytes(int bytes) {
 #elif V8_TARGET_ARCH_MIPS || V8_TARGET_ARCH_MIPS64
 void JumpTableAssembler::EmitLazyCompileJumpSlot(uint32_t func_index,
                                                  Address lazy_compile_target) {
+  int start = pc_offset();
   li(kWasmCompileLazyFuncIndexRegister, func_index);  // max. 2 instr
   // Jump produces max. 4 instructions for 32-bit platform
   // and max. 6 instructions for 64-bit platform.
   Jump(lazy_compile_target, RelocInfo::NONE);
+  int nop_bytes = start + kLazyCompileTableSlotSize - pc_offset();
+  DCHECK_EQ(nop_bytes % kInstrSize, 0);
+  for (int i = 0; i < nop_bytes; i += kInstrSize) nop();
 }
 
 void JumpTableAssembler::EmitRuntimeStubSlot(Address builtin_target) {
@@ -191,12 +187,16 @@ void JumpTableAssembler::NopBytes(int bytes) {
 #elif V8_TARGET_ARCH_PPC64
 void JumpTableAssembler::EmitLazyCompileJumpSlot(uint32_t func_index,
                                                  Address lazy_compile_target) {
+  int start = pc_offset();
   // Load function index to register. max 5 instrs
   mov(kWasmCompileLazyFuncIndexRegister, Operand(func_index));
   // Jump to {lazy_compile_target}. max 5 instrs
   mov(r0, Operand(lazy_compile_target));
   mtctr(r0);
   bctr();
+  int nop_bytes = start + kLazyCompileTableSlotSize - pc_offset();
+  DCHECK_EQ(nop_bytes % kInstrSize, 0);
+  for (int i = 0; i < nop_bytes; i += kInstrSize) nop();
 }
 
 void JumpTableAssembler::EmitRuntimeStubSlot(Address builtin_target) {

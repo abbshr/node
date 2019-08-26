@@ -37,7 +37,7 @@ const tls = require('tls');
 const fixtures = require('../common/fixtures');
 
 // Test Certificates
-const certPfx = fixtures.readSync('test_cert.pfx');
+const certPfx = fixtures.readKey('rsa_cert.pfx');
 
 // 'this' safety
 // https://github.com/joyent/node/issues/6690
@@ -167,42 +167,66 @@ testImmutability(crypto.getCurves);
 
 // Regression tests for https://github.com/nodejs/node-v0.x-archive/pull/5725:
 // hex input that's not a power of two should throw, not assert in C++ land.
-assert.throws(function() {
-  crypto.createCipher('aes192', 'test').update('0', 'hex');
-}, (err) => {
-  const errorMessage =
-    common.hasFipsCrypto ? /not supported in FIPS mode/ : /Bad input string/;
-  // Throws general Error, so there is no opensslErrorStack property.
-  if ((err instanceof Error) &&
-      errorMessage.test(err) &&
-      err.opensslErrorStack === undefined) {
-    return true;
-  }
-});
 
-assert.throws(function() {
-  crypto.createDecipher('aes192', 'test').update('0', 'hex');
-}, (err) => {
-  const errorMessage =
-    common.hasFipsCrypto ? /not supported in FIPS mode/ : /Bad input string/;
-  // Throws general Error, so there is no opensslErrorStack property.
-  if ((err instanceof Error) &&
-      errorMessage.test(err) &&
-      err.opensslErrorStack === undefined) {
-    return true;
-  }
-});
+common.expectsError(
+  () => crypto.createCipher('aes192', 'test').update('0', 'hex'),
+  Object.assign(
+    common.hasFipsCrypto ?
+      {
+        code: undefined,
+        type: Error,
+        message: /not supported in FIPS mode/,
+      } :
+      {
+        code: 'ERR_INVALID_ARG_VALUE',
+        type: TypeError,
+        message: "The argument 'encoding' is invalid for data of length 1." +
+            " Received 'hex'",
+      },
+    { opensslErrorStack: undefined }
+  )
+);
 
-assert.throws(function() {
-  crypto.createHash('sha1').update('0', 'hex');
-}, (err) => {
-  // Throws TypeError, so there is no opensslErrorStack property.
-  if ((err instanceof Error) &&
-      /^TypeError: Bad input string$/.test(err) &&
-      err.opensslErrorStack === undefined) {
-    return true;
+common.expectsError(
+  () => crypto.createDecipher('aes192', 'test').update('0', 'hex'),
+  Object.assign(
+    common.hasFipsCrypto ?
+      {
+        code: undefined,
+        type: Error,
+        message: /not supported in FIPS mode/,
+      } :
+      {
+        code: 'ERR_INVALID_ARG_VALUE',
+        type: TypeError,
+        message: "The argument 'encoding' is invalid for data of length 1." +
+            " Received 'hex'",
+      },
+    { opensslErrorStack: undefined }
+  )
+);
+
+common.expectsError(
+  () => crypto.createHash('sha1').update('0', 'hex'),
+  {
+    code: 'ERR_INVALID_ARG_VALUE',
+    type: TypeError,
+    message: "The argument 'encoding' is invalid for data of length 1." +
+        " Received 'hex'",
+    opensslErrorStack: undefined
   }
-});
+);
+
+common.expectsError(
+  () => crypto.createHmac('sha256', 'a secret').update('0', 'hex'),
+  {
+    code: 'ERR_INVALID_ARG_VALUE',
+    type: TypeError,
+    message: "The argument 'encoding' is invalid for data of length 1." +
+        " Received 'hex'",
+    opensslErrorStack: undefined
+  }
+);
 
 assert.throws(function() {
   const priv = [
@@ -224,17 +248,12 @@ assert.throws(function() {
 });
 
 assert.throws(function() {
-  // The correct header inside `test_bad_rsa_privkey.pem` should have been
+  // The correct header inside `rsa_private_pkcs8_bad.pem` should have been
   // -----BEGIN PRIVATE KEY----- and -----END PRIVATE KEY-----
   // instead of
   // -----BEGIN RSA PRIVATE KEY----- and -----END RSA PRIVATE KEY-----
-  // It is generated in this way:
-  //   $ openssl genrsa -out mykey.pem 512;
-  //   $ openssl pkcs8 -topk8 -inform PEM -outform PEM -in mykey.pem \
-  //     -out private_key.pem -nocrypt;
-  //   Then open private_key.pem and change its header and footer.
-  const sha1_privateKey = fixtures.readSync('test_bad_rsa_privkey.pem',
-                                            'ascii');
+  const sha1_privateKey = fixtures.readKey('rsa_private_pkcs8_bad.pem',
+                                           'ascii');
   // This would inject errors onto OpenSSL's error stack
   crypto.createSign('sha1').sign(sha1_privateKey);
 }, (err) => {

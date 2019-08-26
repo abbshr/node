@@ -25,7 +25,7 @@ const common = require('../common');
 
 const assert = require('assert');
 const readline = require('readline');
-const internalReadline = require('internal/readline');
+const internalReadline = require('internal/readline/utils');
 const EventEmitter = require('events').EventEmitter;
 const { Writable, Readable } = require('stream');
 
@@ -361,6 +361,26 @@ function isWarned(emitter) {
       readline.createInterface({
         input: fi,
         completer: 'string is not valid'
+      });
+    }, {
+      type: TypeError,
+      code: 'ERR_INVALID_OPT_VALUE'
+    });
+
+    common.expectsError(function() {
+      readline.createInterface({
+        input: fi,
+        completer: ''
+      });
+    }, {
+      type: TypeError,
+      code: 'ERR_INVALID_OPT_VALUE'
+    });
+
+    common.expectsError(function() {
+      readline.createInterface({
+        input: fi,
+        completer: false
       });
     }, {
       type: TypeError,
@@ -1042,7 +1062,7 @@ function isWarned(emitter) {
       rli.close();
     }
 
-    // multi-line cursor position
+    // Multi-line input cursor position
     {
       const fi = new FakeInput();
       const rli = new readline.Interface({
@@ -1056,6 +1076,23 @@ function isWarned(emitter) {
       const cursorPos = rli._getCursorPos();
       assert.strictEqual(cursorPos.rows, 1);
       assert.strictEqual(cursorPos.cols, 5);
+      rli.close();
+    }
+
+    // Multi-line prompt cursor position
+    {
+      const fi = new FakeInput();
+      const rli = new readline.Interface({
+        input: fi,
+        output: fi,
+        prompt: '\nfilledline\nwraping text\n> ',
+        terminal: terminal
+      });
+      fi.columns = 10;
+      fi.emit('data', 't');
+      const cursorPos = rli._getCursorPos();
+      assert.strictEqual(cursorPos.rows, 4);
+      assert.strictEqual(cursorPos.cols, 3);
       rli.close();
     }
 

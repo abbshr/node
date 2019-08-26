@@ -69,11 +69,13 @@ if "%1"=="" goto args-done
 if /i "%1"=="debug"         set config=Debug&goto arg-ok
 if /i "%1"=="release"       set config=Release&set ltcg=1&set cctest=1&goto arg-ok
 if /i "%1"=="clean"         set target=Clean&goto arg-ok
+if /i "%1"=="testclean"     set target=TestClean&goto arg-ok
 if /i "%1"=="ia32"          set target_arch=x86&goto arg-ok
 if /i "%1"=="x86"           set target_arch=x86&goto arg-ok
 if /i "%1"=="x64"           set target_arch=x64&goto arg-ok
 if /i "%1"=="arm64"         set target_arch=arm64&goto arg-ok
 if /i "%1"=="vs2017"        set target_env=vs2017&goto arg-ok
+if /i "%1"=="vs2019"        set target_env=vs2019&goto arg-ok
 if /i "%1"=="noprojgen"     set noprojgen=1&goto arg-ok
 if /i "%1"=="projgen"       set projgen=1&goto arg-ok
 if /i "%1"=="nobuild"       set nobuild=1&goto arg-ok
@@ -174,6 +176,7 @@ set "node_exe=%config%\node.exe"
 set "node_gyp_exe="%node_exe%" deps\npm\node_modules\node-gyp\bin\node-gyp"
 set "npm_exe="%~dp0%node_exe%" %~dp0deps\npm\bin\npm-cli.js"
 if "%target_env%"=="vs2017" set "node_gyp_exe=%node_gyp_exe% --msvs_version=2017"
+if "%target_env%"=="vs2019" set "node_gyp_exe=%node_gyp_exe% --msvs_version=2019"
 
 if "%config%"=="Debug"      set configure_flags=%configure_flags% --debug
 if defined nosnapshot       set configure_flags=%configure_flags% --without-snapshot
@@ -197,6 +200,13 @@ if not exist "%~dp0deps\icu" goto no-depsicu
 if "%target%"=="Clean" echo deleting %~dp0deps\icu
 if "%target%"=="Clean" rmdir /S /Q %~dp0deps\icu
 :no-depsicu
+
+if "%target%"=="TestClean" (
+  echo deleting test/.tmp*
+  if exist "test\.tmp*" for /f %%i in ('dir /a:d /s /b test\.tmp*') do rmdir /S /Q "%%i"
+  goto exit
+)
+
 
 call tools\msvs\find_python.cmd
 if errorlevel 1 goto :exit
@@ -229,9 +239,9 @@ if %target_arch%==x86 if %msvs_host_arch%==x86 set vcvarsall_arg=x86
 
 @rem Look for Visual Studio 2017
 :vs-set-2017
-if defined target_env if "%target_env%" NEQ "vs2017" goto msbuild-not-found
+if defined target_env if "%target_env%" NEQ "vs2017" goto vs-set-2019
 echo Looking for Visual Studio 2017
-call tools\msvs\vswhere_usability_wrapper.cmd
+call tools\msvs\vswhere_usability_wrapper.cmd "[15.0,16.0)"
 if "_%VCINSTALLDIR%_" == "__" goto msbuild-not-found
 if defined msi (
   echo Looking for WiX installation for Visual Studio 2017...
@@ -260,6 +270,41 @@ if defined DEBUG_HELPER @ECHO ON
 echo Found MSVS version %VisualStudioVersion%
 set GYP_MSVS_VERSION=2017
 set PLATFORM_TOOLSET=v141
+goto msbuild-found
+
+@rem Look for Visual Studio 2019
+:vs-set-2019
+if defined target_env if "%target_env%" NEQ "vs2019" goto msbuild-not-found
+echo Looking for Visual Studio 2019
+call tools\msvs\vswhere_usability_wrapper.cmd "[16.0,17.0)"
+if "_%VCINSTALLDIR%_" == "__" goto msbuild-not-found
+if defined msi (
+  echo Looking for WiX installation for Visual Studio 2019...
+  if not exist "%WIX%\SDK\VS2017" (
+    echo Failed to find WiX install for Visual Studio 2019
+    echo VS2019 support for WiX is only present starting at version 3.11
+    goto msbuild-not-found
+  )
+  if not exist "%VCINSTALLDIR%\..\MSBuild\Microsoft\WiX" (
+    echo Failed to find the WiX Toolset Visual Studio 2019 Extension
+    goto msbuild-not-found
+  )
+)
+@rem check if VS2019 is already setup, and for the requested arch
+if "_%VisualStudioVersion%_" == "_16.0_" if "_%VSCMD_ARG_TGT_ARCH%_"=="_%target_arch%_" goto found_vs2019
+@rem need to clear VSINSTALLDIR for vcvarsall to work as expected
+set "VSINSTALLDIR="
+@rem prevent VsDevCmd.bat from changing the current working directory
+set "VSCMD_START_DIR=%CD%"
+set vcvars_call="%VCINSTALLDIR%\Auxiliary\Build\vcvarsall.bat" %vcvarsall_arg%
+echo calling: %vcvars_call%
+call %vcvars_call%
+if errorlevel 1 goto msbuild-not-found
+if defined DEBUG_HELPER @ECHO ON
+:found_vs2019
+echo Found MSVS version %VisualStudioVersion%
+set GYP_MSVS_VERSION=2019
+set PLATFORM_TOOLSET=v142
 goto msbuild-found
 
 :msbuild-not-found
@@ -328,8 +373,9 @@ if "%target%" == "Clean" goto exit
 :after-build
 rd %config%
 if errorlevel 1 echo "Old build output exists at 'out\%config%'. Please remove." & exit /B
-if EXIST out\%config% mklink /D %config% out\%config%
-if errorlevel 1 exit /B
+:: Use /J because /D (symlink) requires special permissions.
+if EXIST out\%config% mklink /J %config% out\%config%
+if errorlevel 1 echo "Could not create junction to 'out\%config%'." & exit /B
 
 :sign
 @rem Skip signing unless the `sign` option was specified.
@@ -592,51 +638,17 @@ goto lint-cpp
 
 :lint-cpp
 if not defined lint_cpp goto lint-js
-call :run-lint-cpp src\*.c src\*.cc src\*.h test\addons\*.cc test\addons\*.h test\js-native-api\*.cc test\js-native-api\*.cc test\js-native-api\*.h test\node-api\*.cc test\node-api\*.cc test\node-api\*.h test\cctest\*.cc test\cctest\*.h tools\icu\*.cc tools\icu\*.h
-python tools/check-imports.py
+if defined NODEJS_MAKE goto run-make-lint
+where make > NUL 2>&1 && make -v | findstr /C:"GNU Make" 1> NUL
+if "%ERRORLEVEL%"=="0" set "NODEJS_MAKE=make PYTHON=python" & goto run-make-lint
+where wsl > NUL 2>1
+if "%ERRORLEVEL%"=="0" set "NODEJS_MAKE=wsl make" & goto run-make-lint
+echo Could not find GNU Make, needed for linting C/C++
 goto lint-js
 
-:run-lint-cpp
-if "%*"=="" goto exit
-echo running lint-cpp '%*'
-set cppfilelist=
-setlocal enabledelayedexpansion
-for /f "tokens=*" %%G in ('dir /b /s /a %*') do (
-  set relpath=%%G
-  set relpath=!relpath:*%~dp0=!
-  call :add-to-list !relpath! > nul
-)
-( endlocal
-  set cppfilelist=%localcppfilelist%
-)
-python tools/cpplint.py %cppfilelist% > nul
-goto exit
-
-:add-to-list
-@rem Subroutine used to filter items from the cpplint file list
-echo %1 | findstr /c:"src\node_root_certs.h" > nul 2>&1
-if %errorlevel% equ 0 goto exit
-
-echo %1 | findstr /c:"src\tracing\trace_event.h" > nul 2>&1
-if %errorlevel% equ 0 goto exit
-
-echo %1 | findstr /c:"src\tracing\trace_event_common.h" > nul 2>&1
-if %errorlevel% equ 0 goto exit
-
-echo %1 | findstr /r /c:"test\\addons\\[0-9].*_.*\.h" > nul 2>&1
-if %errorlevel% equ 0 goto exit
-
-echo %1 | findstr /r /c:"test\\addons\\[0-9].*_.*\.cc" > nul 2>&1
-if %errorlevel% equ 0 goto exit
-
-echo %1 | findstr /c:"test\js-native-api\common.h" > nul 2>&1
-if %errorlevel% equ 0 goto exit
-
-echo %1 | findstr /c:"test\node-api\common.h" > nul 2>&1
-if %errorlevel% equ 0 goto exit
-
-set "localcppfilelist=%localcppfilelist% %1"
-goto exit
+:run-make-lint
+%NODEJS_MAKE% lint-cpp
+goto lint-js
 
 :lint-js
 if defined lint_js_ci goto lint-js-ci
@@ -681,7 +693,7 @@ del .used_configure_flags
 goto exit
 
 :help
-echo vcbuild.bat [debug/release] [msi] [doc] [test/test-all/test-addons/test-js-native-api/test-node-api/test-benchmark/test-internet/test-pummel/test-simple/test-message/test-tick-processor/test-known-issues/test-node-inspect/test-check-deopts/test-npm/test-async-hooks/test-v8/test-v8-intl/test-v8-benchmarks/test-v8-all] [ignore-flaky] [static/dll] [noprojgen] [projgen] [small-icu/full-icu/without-intl] [nobuild] [nosnapshot] [noetw] [ltcg] [licensetf] [sign] [ia32/x86/x64] [vs2017] [download-all] [enable-vtune] [lint/lint-ci/lint-js/lint-js-ci/lint-md] [lint-md-build] [package] [build-release] [upload] [no-NODE-OPTIONS] [link-module path-to-module] [debug-http2] [debug-nghttp2] [clean] [cctest] [no-cctest] [openssl-no-asm]
+echo vcbuild.bat [debug/release] [msi] [doc] [test/test-all/test-addons/test-js-native-api/test-node-api/test-benchmark/test-internet/test-pummel/test-simple/test-message/test-tick-processor/test-known-issues/test-node-inspect/test-check-deopts/test-npm/test-async-hooks/test-v8/test-v8-intl/test-v8-benchmarks/test-v8-all] [ignore-flaky] [static/dll] [noprojgen] [projgen] [small-icu/full-icu/without-intl] [nobuild] [nosnapshot] [noetw] [ltcg] [licensetf] [sign] [ia32/x86/x64/arm64] [vs2017] [download-all] [enable-vtune] [lint/lint-ci/lint-js/lint-js-ci/lint-md] [lint-md-build] [package] [build-release] [upload] [no-NODE-OPTIONS] [link-module path-to-module] [debug-http2] [debug-nghttp2] [clean] [cctest] [no-cctest] [openssl-no-asm]
 echo Examples:
 echo   vcbuild.bat                          : builds release build
 echo   vcbuild.bat debug                    : builds debug build

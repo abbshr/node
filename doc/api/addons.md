@@ -8,7 +8,13 @@ can be loaded into Node.js using the [`require()`][require] function, and used
 just as if they were an ordinary Node.js module. They are used primarily to
 provide an interface between JavaScript running in Node.js and C/C++ libraries.
 
-At the moment, the method for implementing Addons is rather complicated,
+There are three options for implementing Addons: N-API, nan, or direct
+use of internal V8, libuv and Node.js libraries. Unless you need direct
+access to functionality which is not exposed by N-API, use N-API.
+Refer to the section [C/C++ Addons - N-API](n-api.html)
+for more information on N-API.
+
+When not using N-API, implementing Addons is complicated,
 involving knowledge of several components and APIs:
 
  - V8: the C++ library Node.js currently uses to provide the
@@ -83,7 +89,7 @@ NODE_MODULE(NODE_GYP_MODULE_NAME, Initialize)
 }  // namespace demo
 ```
 
-Note that all Node.js Addons must export an initialization function following
+All Node.js Addons must export an initialization function following
 the pattern:
 
 ```cpp
@@ -306,16 +312,12 @@ console.log(addon.hello());
 // Prints: 'world'
 ```
 
-Please see the examples below for further information or
-<https://github.com/arturadib/node-qt> for an example in production.
-
 Because the exact path to the compiled Addon binary can vary depending on how
 it is compiled (i.e. sometimes it may be in `./build/Debug/`), Addons can use
 the [bindings][] package to load the compiled module.
 
-Note that while the `bindings` package implementation is more sophisticated
-in how it locates Addon modules, it is essentially using a try-catch pattern
-similar to:
+While the `bindings` package implementation is more sophisticated in how it
+locates Addon modules, it is essentially using a `try…catch` pattern similar to:
 
 ```js
 try {
@@ -591,10 +593,10 @@ NODE_MODULE(NODE_GYP_MODULE_NAME, Init)
 }  // namespace demo
 ```
 
-Note that this example uses a two-argument form of `Init()` that receives
-the full `module` object as the second argument. This allows the Addon
-to completely overwrite `exports` with a single function instead of
-adding the function as a property of `exports`.
+This example uses a two-argument form of `Init()` that receives the full
+`module` object as the second argument. This allows the Addon to completely
+overwrite `exports` with a single function instead of adding the function as a
+property of `exports`.
 
 To test it, run the following JavaScript:
 
@@ -608,7 +610,7 @@ addon((msg) => {
 });
 ```
 
-Note that, in this example, the callback function is invoked synchronously.
+In this example, the callback function is invoked synchronously.
 
 ### Object factory
 

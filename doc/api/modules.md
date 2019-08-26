@@ -147,7 +147,7 @@ To get the exact filename that will be loaded when `require()` is called, use
 the `require.resolve()` function.
 
 Putting together all of the above, here is the high-level algorithm
-in pseudocode of what `require.resolve()` does:
+in pseudocode of what `require()` does:
 
 ```txt
 require(X) from module at path Y
@@ -201,6 +201,40 @@ NODE_MODULES_PATHS(START)
    d. let I = I - 1
 5. return DIRS
 ```
+
+If `--experimental-exports` is enabled, Node.js allows packages loaded via
+`LOAD_NODE_MODULES` to explicitly declare which file paths to expose and how
+they should be interpreted. This expands on the control packages already had
+using the `main` field.
+
+With this feature enabled, the `LOAD_NODE_MODULES` changes are:
+
+```txt
+LOAD_NODE_MODULES(X, START)
+1. let DIRS = NODE_MODULES_PATHS(START)
+2. for each DIR in DIRS:
+   a. let FILE_PATH = RESOLVE_BARE_SPECIFIER(DIR, X)
+   a. LOAD_AS_FILE(FILE_PATH)
+   b. LOAD_AS_DIRECTORY(FILE_PATH)
+
+RESOLVE_BARE_SPECIFIER(DIR, X)
+1. Try to interpret X as a combination of name and subpath where the name
+   may have a @scope/ prefix and the subpath begins with a slash (`/`).
+2. If X matches this pattern and DIR/name/package.json is a file:
+   a. Parse DIR/name/package.json, and look for "exports" field.
+   b. If "exports" is null or undefined, GOTO 3.
+   c. Find the longest key in "exports" that the subpath starts with.
+   d. If no such key can be found, throw "not found".
+   e. let RESOLVED_URL =
+        PACKAGE_EXPORTS_TARGET_RESOLVE(pathToFileURL(DIR/name), exports[key],
+        subpath.slice(key.length)), as defined in the esm resolver.
+   f. return fileURLToPath(RESOLVED_URL)
+3. return DIR/X
+```
+
+`"exports"` is only honored when loading a package "name" as defined above. Any
+`"exports"` values within nested directories and packages must be declared by
+the `package.json` responsible for the "name".
 
 ## Caching
 
@@ -342,7 +376,7 @@ If the given path does not exist, `require()` will throw an [`Error`][] with its
 <!--type=misc-->
 
 It is convenient to organize programs and libraries into self-contained
-directories, and then provide a single entry point to that library.
+directories, and then provide a single entry point to those directories.
 There are three ways in which a folder may be passed to `require()` as
 an argument.
 
@@ -589,8 +623,8 @@ added: v0.3.0
 * {Object}
 
 Modules are cached in this object when they are required. By deleting a key
-value from this object, the next `require` will reload the module. Note that
-this does not apply to [native addons][], for which reloading will result in an
+value from this object, the next `require` will reload the module.
+This does not apply to [native addons][], for which reloading will result in an
 error.
 
 Adding or replacing entries is also possible. This cache is checked before
@@ -675,7 +709,7 @@ changes:
   * `paths` {string[]} Paths to resolve module location from. If present, these
     paths are used instead of the default resolution paths, with the exception
     of [GLOBAL_FOLDERS][] like `$HOME/.node_modules`, which are always
-    included. Note that each of these paths is used as a starting point for
+    included. Each of these paths is used as a starting point for
     the module resolution algorithm, meaning that the `node_modules` hierarchy
     is checked from this location.
 * Returns: {string}
@@ -728,7 +762,7 @@ added: v0.1.16
 
 The `module.exports` object is created by the `Module` system. Sometimes this is
 not acceptable; many want their module to be an instance of some class. To do
-this, assign the desired export object to `module.exports`. Note that assigning
+this, assign the desired export object to `module.exports`. Assigning
 the desired object to `exports` will simply rebind the local `exports` variable,
 which is probably not what is desired.
 
@@ -755,7 +789,7 @@ a.on('ready', () => {
 });
 ```
 
-Note that assignment to `module.exports` must be done immediately. It cannot be
+Assignment to `module.exports` must be done immediately. It cannot be
 done in any callbacks. This does not work:
 
 `x.js`:
@@ -905,7 +939,7 @@ added: v9.3.0
 A list of the names of all modules provided by Node.js. Can be used to verify
 if a module is maintained by a third party or not.
 
-Note that `module` in this context isn't the same object that's provided
+`module` in this context isn't the same object that's provided
 by the [module wrapper][]. To access it, require the `Module` module:
 
 ```js
@@ -914,7 +948,7 @@ const builtin = require('module').builtinModules;
 
 ### module.createRequire(filename)
 <!-- YAML
-added: REPLACEME
+added: v12.2.0
 -->
 
 * `filename` {string|URL} Filename to be used to construct the require
@@ -923,17 +957,17 @@ added: REPLACEME
 * Returns: {require} Require function
 
 ```js
-const { createRequire } = require('module');
-const requireUtil = createRequire(require.resolve('../src/utils/'));
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
 
-// Require `../src/utils/some-tool`
-requireUtil('./some-tool');
+// sibling-module.js is a CommonJS module.
+const siblingModule = require('./sibling-module');
 ```
 
 ### module.createRequireFromPath(filename)
 <!-- YAML
 added: v10.12.0
-deprecated: REPLACEME
+deprecated: v12.2.0
 -->
 
 * `filename` {string} Filename to be used to construct the relative require

@@ -1,6 +1,7 @@
 #include "env.h"
 
 #include "async_wrap.h"
+#include "memory_tracker-inl.h"
 #include "node_buffer.h"
 #include "node_context_data.h"
 #include "node_errors.h"
@@ -13,6 +14,7 @@
 #include "node_worker.h"
 #include "tracing/agent.h"
 #include "tracing/traced_value.h"
+#include "util-inl.h"
 #include "v8-profiler.h"
 
 #include <algorithm>
@@ -233,8 +235,62 @@ uint64_t Environment::AllocateThreadId() {
   return next_thread_id++;
 }
 
+void Environment::CreateProperties() {
+  HandleScope handle_scope(isolate_);
+  Local<Context> ctx = context();
+  Local<FunctionTemplate> templ = FunctionTemplate::New(isolate());
+  templ->InstanceTemplate()->SetInternalFieldCount(1);
+  Local<Object> obj = templ->GetFunction(ctx)
+                          .ToLocalChecked()
+                          ->NewInstance(ctx)
+                          .ToLocalChecked();
+  obj->SetAlignedPointerInInternalField(0, this);
+  set_as_callback_data(obj);
+  set_as_callback_data_template(templ);
+
+  // Store primordials setup by the per-context script in the environment.
+  Local<Object> per_context_bindings =
+      GetPerContextExports(ctx).ToLocalChecked();
+  Local<Value> primordials =
+      per_context_bindings->Get(ctx, primordials_string()).ToLocalChecked();
+  CHECK(primordials->IsObject());
+  set_primordials(primordials.As<Object>());
+
+  Local<Object> process_object =
+      node::CreateProcessObject(this).FromMaybe(Local<Object>());
+  set_process_object(process_object);
+}
+
+std::string GetExecPath(const std::vector<std::string>& argv) {
+  char exec_path_buf[2 * PATH_MAX];
+  size_t exec_path_len = sizeof(exec_path_buf);
+  std::string exec_path;
+  if (uv_exepath(exec_path_buf, &exec_path_len) == 0) {
+    exec_path = std::string(exec_path_buf, exec_path_len);
+  } else {
+    exec_path = argv[0];
+  }
+
+  // On OpenBSD process.execPath will be relative unless we
+  // get the full path before process.execPath is used.
+#if defined(__OpenBSD__)
+  uv_fs_t req;
+  req.ptr = nullptr;
+  if (0 ==
+      uv_fs_realpath(nullptr, &req, exec_path.c_str(), nullptr)) {
+    CHECK_NOT_NULL(req.ptr);
+    exec_path = std::string(static_cast<char*>(req.ptr));
+  }
+  uv_fs_req_cleanup(&req);
+#endif
+
+  return exec_path;
+}
+
 Environment::Environment(IsolateData* isolate_data,
                          Local<Context> context,
+                         const std::vector<std::string>& args,
+                         const std::vector<std::string>& exec_args,
                          Flags flags,
                          uint64_t thread_id)
     : isolate_(context->GetIsolate()),
@@ -242,6 +298,9 @@ Environment::Environment(IsolateData* isolate_data,
       immediate_info_(context->GetIsolate()),
       tick_info_(context->GetIsolate()),
       timer_base_(uv_now(isolate_data->event_loop())),
+      exec_argv_(exec_args),
+      argv_(args),
+      exec_path_(GetExecPath(args)),
       should_abort_on_uncaught_toggle_(isolate_, 1),
       stream_base_state_(isolate_, StreamBase::kNumStreamBaseStateFields),
       flags_(flags),
@@ -252,16 +311,6 @@ Environment::Environment(IsolateData* isolate_data,
   // We'll be creating new objects so make sure we've entered the context.
   HandleScope handle_scope(isolate());
   Context::Scope context_scope(context);
-  {
-    Local<FunctionTemplate> templ = FunctionTemplate::New(isolate());
-    templ->InstanceTemplate()->SetInternalFieldCount(1);
-    Local<Object> obj =
-        templ->GetFunction(context).ToLocalChecked()->NewInstance(
-            context).ToLocalChecked();
-    obj->SetAlignedPointerInInternalField(0, this);
-    set_as_callback_data(obj);
-    set_as_callback_data_template(templ);
-  }
 
   set_env_vars(per_process::system_environment);
 
@@ -290,7 +339,7 @@ Environment::Environment(IsolateData* isolate_data,
       [](void* arg) {
         Environment* env = static_cast<Environment*>(arg);
         if (!env->destroy_async_id_list()->empty())
-          AsyncWrap::DestroyAsyncIdsCallback(env, nullptr);
+          AsyncWrap::DestroyAsyncIdsCallback(env);
       },
       this);
 
@@ -304,6 +353,22 @@ Environment::Environment(IsolateData* isolate_data,
       performance::NODE_PERFORMANCE_MILESTONE_V8_START,
       performance::performance_v8_start);
 
+  if (*TRACE_EVENT_API_GET_CATEGORY_GROUP_ENABLED(
+          TRACING_CATEGORY_NODE1(environment)) != 0) {
+    auto traced_value = tracing::TracedValue::Create();
+    traced_value->BeginArray("args");
+    for (const std::string& arg : args) traced_value->AppendString(arg);
+    traced_value->EndArray();
+    traced_value->BeginArray("exec_args");
+    for (const std::string& arg : exec_args) traced_value->AppendString(arg);
+    traced_value->EndArray();
+    TRACE_EVENT_NESTABLE_ASYNC_BEGIN1(TRACING_CATEGORY_NODE1(environment),
+                                      "Environment",
+                                      this,
+                                      "args",
+                                      std::move(traced_value));
+  }
+
   // By default, always abort when --abort-on-uncaught-exception was passed.
   should_abort_on_uncaught_toggle_[0] = 1;
 
@@ -311,16 +376,13 @@ Environment::Environment(IsolateData* isolate_data,
   credentials::SafeGetenv("NODE_DEBUG_NATIVE", &debug_cats, this);
   set_debug_categories(debug_cats, true);
 
-  isolate()->GetHeapProfiler()->AddBuildEmbedderGraphCallback(
-      BuildEmbedderGraph, this);
   if (options_->no_force_async_hooks_checks) {
     async_hooks_.no_force_checks();
   }
-}
 
-CompileFnEntry::CompileFnEntry(Environment* env, uint32_t id)
-    : env(env), id(id) {
-  env->compile_fn_entries.insert(this);
+  // TODO(joyeecheung): deserialize when the snapshot covers the environment
+  // properties.
+  CreateProperties();
 }
 
 Environment::~Environment() {
@@ -330,12 +392,6 @@ Environment::~Environment() {
   // Make sure there are no re-used libuv wrapper objects.
   // CleanupHandles() should have removed all of them.
   CHECK(file_handle_read_wrap_freelist_.empty());
-
-  // dispose the Persistent references to the compileFunction
-  // wrappers used in the dynamic import callback
-  for (auto& entry : compile_fn_entries) {
-    delete entry;
-  }
 
   HandleScope handle_scope(isolate());
 
@@ -358,6 +414,7 @@ Environment::~Environment() {
   delete[] heap_statistics_buffer_;
   delete[] heap_space_statistics_buffer_;
   delete[] http_parser_buffer_;
+  delete[] heap_code_statistics_buffer_;
 
   TRACE_EVENT_NESTABLE_ASYNC_END0(
     TRACING_CATEGORY_NODE1(environment), "Environment", this);
@@ -430,35 +487,6 @@ void Environment::ExitEnv() {
   set_can_call_into_js(false);
   thread_stopper()->Stop();
   isolate_->TerminateExecution();
-}
-
-MaybeLocal<Object> Environment::ProcessCliArgs(
-    const std::vector<std::string>& args,
-    const std::vector<std::string>& exec_args) {
-  argv_ = args;
-  exec_argv_ = exec_args;
-
-  if (*TRACE_EVENT_API_GET_CATEGORY_GROUP_ENABLED(
-          TRACING_CATEGORY_NODE1(environment)) != 0) {
-    auto traced_value = tracing::TracedValue::Create();
-    traced_value->BeginArray("args");
-    for (const std::string& arg : args) traced_value->AppendString(arg);
-    traced_value->EndArray();
-    traced_value->BeginArray("exec_args");
-    for (const std::string& arg : exec_args) traced_value->AppendString(arg);
-    traced_value->EndArray();
-    TRACE_EVENT_NESTABLE_ASYNC_BEGIN1(TRACING_CATEGORY_NODE1(environment),
-                                      "Environment",
-                                      this,
-                                      "args",
-                                      std::move(traced_value));
-  }
-
-  Local<Object> process_object =
-      node::CreateProcessObject(this, args, exec_args)
-          .FromMaybe(Local<Object>());
-  set_process_object(process_object);
-  return process_object;
 }
 
 void Environment::RegisterHandleCleanups() {
@@ -539,7 +567,7 @@ void Environment::StopProfilerIdleNotifier() {
 }
 
 void Environment::PrintSyncTrace() const {
-  if (!options_->trace_sync_io) return;
+  if (!trace_sync_io_) return;
 
   HandleScope handle_scope(isolate());
 
@@ -614,37 +642,38 @@ void Environment::AtExit(void (*cb)(void* arg), void* arg) {
 void Environment::RunAndClearNativeImmediates() {
   TraceEventScope trace_scope(TRACING_CATEGORY_NODE1(environment),
                               "RunAndClearNativeImmediates", this);
-  size_t count = native_immediate_callbacks_.size();
-  if (count > 0) {
-    size_t ref_count = 0;
-    std::vector<NativeImmediateCallback> list;
-    native_immediate_callbacks_.swap(list);
-    auto drain_list = [&]() {
-      TryCatchScope try_catch(this);
-      for (auto it = list.begin(); it != list.end(); ++it) {
-        DebugSealHandleScope seal_handle_scope(isolate());
-        it->cb_(this, it->data_);
-        if (it->refed_)
-          ref_count++;
-        if (UNLIKELY(try_catch.HasCaught())) {
-          if (!try_catch.HasTerminated())
-            FatalException(isolate(), try_catch);
+  size_t ref_count = 0;
+  size_t count = 0;
+  std::unique_ptr<NativeImmediateCallback> head;
+  head.swap(native_immediate_callbacks_head_);
+  native_immediate_callbacks_tail_ = nullptr;
 
-          // Bail out, remove the already executed callbacks from list
-          // and set up a new TryCatch for the other pending callbacks.
-          std::move_backward(it, list.end(), list.begin() + (list.end() - it));
-          list.resize(list.end() - it);
-          return true;
-        }
+  auto drain_list = [&]() {
+    TryCatchScope try_catch(this);
+    for (; head; head = head->get_next()) {
+      DebugSealHandleScope seal_handle_scope(isolate());
+      count++;
+      if (head->is_refed())
+        ref_count++;
+
+      head->Call(this);
+      if (UNLIKELY(try_catch.HasCaught())) {
+        if (!try_catch.HasTerminated())
+          errors::TriggerUncaughtException(isolate(), try_catch);
+
+        // We are done with the current callback. Move one iteration along,
+        // as if we had completed successfully.
+        head = head->get_next();
+        return true;
       }
-      return false;
-    };
-    while (drain_list()) {}
+    }
+    return false;
+  };
+  while (head && drain_list()) {}
 
-    DCHECK_GE(immediate_info()->count(), count);
-    immediate_info()->count_dec(count);
-    immediate_info()->ref_count_dec(ref_count);
-  }
+  DCHECK_GE(immediate_info()->count(), count);
+  immediate_info()->count_dec(count);
+  immediate_info()->ref_count_dec(ref_count);
 }
 
 
@@ -922,8 +951,8 @@ void MemoryTracker::TrackField(const char* edge_name,
   // identified and tracked here (based on their deleters),
   // but we may convert and track other known types here.
   BaseObject* obj = value.GetBaseObject();
-  if (obj != nullptr) {
-    this->TrackField("arg", obj);
+  if (obj != nullptr && obj->IsDoneInitializing()) {
+    TrackField("arg", obj);
   }
   CHECK_EQ(CurrentNode(), n);
   CHECK_NE(n->size_, 0);
@@ -1044,6 +1073,8 @@ void BaseObject::DeleteMe(void* data) {
   BaseObject* self = static_cast<BaseObject*>(data);
   delete self;
 }
+
+bool BaseObject::IsDoneInitializing() const { return true; }
 
 Local<Object> BaseObject::WrappedObject() const {
   return object();

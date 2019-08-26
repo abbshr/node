@@ -220,13 +220,15 @@ as a `printf`-like format string which can contain zero or more format
 specifiers. Each specifier is replaced with the converted value from the
 corresponding argument. Supported specifiers are:
 
-* `%s` - `String` will be used to convert all values except `BigInt` and
-  `Object`. `BigInt` values will be represented with an `n` and Objects are
-  inspected using `util.inspect()` with options
-  `{ depth: 0, colors: false, compact: 3 }`.
-* `%d` - `Number` will be used to convert all values except `BigInt`.
-* `%i` - `parseInt(value, 10)` is used for all values except `BigInt`.
-* `%f` - `parseFloat(value)` is used for all values.
+* `%s` - `String` will be used to convert all values except `BigInt`, `Object`
+  and `-0`. `BigInt` values will be represented with an `n` and Objects that
+  have no user defined `toString` function are inspected using `util.inspect()`
+  with options `{ depth: 0, colors: false, compact: 3 }`.
+* `%d` - `Number` will be used to convert all values except `BigInt` and
+  `Symbol`.
+* `%i` - `parseInt(value, 10)` is used for all values except `BigInt` and
+  `Symbol`.
+* `%f` - `parseFloat(value)` is used for all values expect `Symbol`.
 * `%j` - JSON. Replaced with the string `'[Circular]'` if the argument contains
   circular references.
 * `%o` - `Object`. A string representation of an object with generic JavaScript
@@ -274,10 +276,9 @@ util.format('%% %s');
 // Returns: '%% %s'
 ```
 
-Please note that `util.format()` is a synchronous method that is mainly
-intended as a debugging tool. Some input values can have a significant
-performance overhead that can block the event loop. Use this function
-with care and never in a hot code path.
+`util.format()` is a synchronous method that is intended as a debugging tool.
+Some input values can have a significant performance overhead that can block the
+event loop. Use this function with care and never in a hot code path.
 
 ## util.formatWithOptions(inspectOptions, format[, ...args])
 <!-- YAML
@@ -390,6 +391,9 @@ stream.write('With ES6');
 <!-- YAML
 added: v0.3.0
 changes:
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/27685
+    description: Circular references now include a marker to the reference.
   - version: v12.0.0
     pr-url: https://github.com/nodejs/node/pull/27109
     description: The `compact` options default is changed to `3` and the
@@ -475,7 +479,7 @@ changes:
     to be displayed on a new line. It will also add new lines to text that is
     longer than `breakLength`. If set to a number, the most `n` inner elements
     are united on a single line as long as all properties fit into
-    `breakLength`. Short array elements are also grouped together. Note that no
+    `breakLength`. Short array elements are also grouped together. No
     text will be reduced below 16 characters, no matter the `breakLength` size.
     For more information, see the example below. **Default:** `3`.
   * `sorted` {boolean|Function} If set to `true` or a function, all properties
@@ -512,6 +516,24 @@ util.inspect(new Bar()); // 'Bar {}'
 util.inspect(baz);       // '[foo] {}'
 ```
 
+Circular references point to their anchor by using a reference index:
+
+```js
+const { inspect } = require('util');
+
+const obj = {};
+obj.a = [obj];
+obj.b = {};
+obj.b.inner = obj.b;
+obj.b.obj = obj;
+
+console.log(inspect(obj));
+// <ref *1> {
+//   a: [ [Circular *1] ],
+//   b: <ref *2> { inner: [Circular *2], obj: [Circular *1] }
+// }
+```
+
 The following example inspects all properties of the `util` object:
 
 ```js
@@ -534,8 +556,6 @@ const o = {
   b: new Map([['za', 1], ['zb', 'test']])
 };
 console.log(util.inspect(o, { compact: true, depth: 5, breakLength: 80 }));
-
-// This will print
 
 // { a:
 //   [ 1,
@@ -1136,7 +1156,7 @@ added: v10.0.0
 * Returns: {boolean}
 
 Returns `true` if the value is an [async function][].
-Note that this only reports back what the JavaScript engine is seeing;
+This only reports back what the JavaScript engine is seeing;
 in particular, the return value may not match the original source code if
 a transpilation tool was used.
 
@@ -1299,7 +1319,7 @@ added: v10.0.0
 * Returns: {boolean}
 
 Returns `true` if the value is a generator function.
-Note that this only reports back what the JavaScript engine is seeing;
+This only reports back what the JavaScript engine is seeing;
 in particular, the return value may not match the original source code if
 a transpilation tool was used.
 
@@ -1318,7 +1338,7 @@ added: v10.0.0
 
 Returns `true` if the value is a generator object as returned from a
 built-in generator function.
-Note that this only reports back what the JavaScript engine is seeing;
+This only reports back what the JavaScript engine is seeing;
 in particular, the return value may not match the original source code if
 a transpilation tool was used.
 
@@ -1856,7 +1876,7 @@ util.isError({ name: 'Error', message: 'an error occurred' });
 // Returns: false
 ```
 
-Note that this method relies on `Object.prototype.toString()` behavior. It is
+This method relies on `Object.prototype.toString()` behavior. It is
 possible to obtain an incorrect result when the `object` argument manipulates
 `@@toStringTag`.
 

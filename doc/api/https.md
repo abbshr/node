@@ -24,7 +24,13 @@ An [`Agent`][] object for HTTPS similar to [`http.Agent`][]. See
 [`https.request()`][] for more information.
 
 ### new Agent([options])
-
+<!-- YAML
+changes:
+  - version: v12.5.0
+    pr-url: https://github.com/nodejs/node/pull/28209
+    description: do not automatically set servername if the target host was
+                 specified using an IP address.
+-->
 * `options` {Object} Set of configurable options to set on the agent.
   Can have the same fields as for [`http.Agent(options)`][], and
   * `maxCachedSessions` {number} maximum number of TLS cached sessions.
@@ -32,17 +38,20 @@ An [`Agent`][] object for HTTPS similar to [`http.Agent`][]. See
   * `servername` {string} the value of
     [Server Name Indication extension][sni wiki] to be sent to the server. Use
     empty string `''` to disable sending the extension.
-    **Default:** hostname or IP address of the target server.
+    **Default:** hostname of the target server, unless the target server
+    is specified using an IP address, in which case the default is `''` (no
+    extension).
 
-    See [`Session Resumption`][] for infomation about TLS session reuse.
+    See [`Session Resumption`][] for information about TLS session reuse.
 
 ## Class: https.Server
 <!-- YAML
 added: v0.3.4
 -->
 
-This class is a subclass of `tls.Server` and emits events same as
-[`http.Server`][]. See [`http.Server`][] for more information.
+* Extends: {tls.Server}
+
+See [`http.Server`][] for more information.
 
 ### server.close([callback])
 <!-- YAML

@@ -40,8 +40,11 @@ function nextdir() {
   return `test${++dirc}`;
 }
 
-// fs.promises should not enumerable.
-assert.strictEqual(Object.keys(fs).includes('promises'), true);
+// fs.promises should be enumerable.
+assert.strictEqual(
+  Object.prototype.propertyIsEnumerable.call(fs, 'promises'),
+  true
+);
 
 {
   access(__filename, 'r')
@@ -80,6 +83,7 @@ async function getHandle(dest) {
     {
       const handle = await getHandle(dest);
       assert.strictEqual(typeof handle, 'object');
+      await handle.close();
     }
 
     // file stats
@@ -103,6 +107,7 @@ async function getHandle(dest) {
 
       await handle.datasync();
       await handle.sync();
+      await handle.close();
     }
 
     // Test fs.read promises when length to read is zero bytes
@@ -116,6 +121,7 @@ async function getHandle(dest) {
       assert.strictEqual(ret.bytesRead, 0);
 
       await unlink(dest);
+      await handle.close();
     }
 
     // Bytes written to file match buffer
@@ -127,6 +133,7 @@ async function getHandle(dest) {
       const ret = await handle.read(Buffer.alloc(bufLen), 0, bufLen, 0);
       assert.strictEqual(ret.bytesRead, bufLen);
       assert.deepStrictEqual(ret.buffer, buf);
+      await handle.close();
     }
 
     // Truncate file to specified length
@@ -140,6 +147,7 @@ async function getHandle(dest) {
       assert.deepStrictEqual(ret.buffer, buf);
       await truncate(dest, 5);
       assert.deepStrictEqual((await readFile(dest)).toString(), 'hello');
+      await handle.close();
     }
 
     // Invalid change of ownership
@@ -178,6 +186,8 @@ async function getHandle(dest) {
           message: 'The value of "gid" is out of range. ' +
                     'It must be >= 0 && < 4294967296. Received -1'
         });
+
+      await handle.close();
     }
 
     // Set modification times

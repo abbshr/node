@@ -24,9 +24,9 @@
 
 #ifdef _WIN32
 # ifndef BUILDING_NODE_EXTENSION
-#   define NODE_EXTERN __declspec(dllexport)
+#  define NODE_EXTERN __declspec(dllexport)
 # else
-#   define NODE_EXTERN __declspec(dllimport)
+#  define NODE_EXTERN __declspec(dllimport)
 # endif
 #else
 # define NODE_EXTERN __attribute__((visibility("default")))
@@ -43,7 +43,7 @@
 // See issue https://github.com/nodejs/node-v0.x-archive/issues/1236
 #if defined(__MINGW32__) || defined(_MSC_VER)
 #ifndef _WIN32_WINNT
-# define _WIN32_WINNT   0x0600  // Windows Server 2008
+# define _WIN32_WINNT 0x0600  // Windows Server 2008
 #endif
 
 #ifndef NOMINMAX
@@ -57,7 +57,7 @@
 #endif
 
 #ifdef _WIN32
-# define SIGKILL         9
+# define SIGKILL 9
 #endif
 
 #include "v8.h"  // NOLINT(build/include_order)
@@ -65,6 +65,12 @@
 #include "node_version.h"  // NODE_MODULE_VERSION
 
 #include <memory>
+
+// We cannot use __POSIX__ in this header because that's only defined when
+// building Node.js.
+#ifndef _WIN32
+#include <signal.h>
+#endif  // _WIN32
 
 #define NODE_MAKE_VERSION(major, minor, patch)                                \
   ((major) * 0x1000 + (minor) * 0x100 + (patch))
@@ -184,8 +190,8 @@ NODE_DEPRECATED("Use MakeCallback(..., async_context)",
 #include <cstdint>
 
 #ifndef NODE_STRINGIFY
-#define NODE_STRINGIFY(n) NODE_STRINGIFY_HELPER(n)
-#define NODE_STRINGIFY_HELPER(n) #n
+# define NODE_STRINGIFY(n) NODE_STRINGIFY_HELPER(n)
+# define NODE_STRINGIFY_HELPER(n) #n
 #endif
 
 #ifdef _WIN32
@@ -807,6 +813,21 @@ class NODE_EXTERN AsyncResource {
   v8::Persistent<v8::Object> resource_;
   async_context async_context_;
 };
+
+#ifndef _WIN32
+// Register a signal handler without interrupting any handlers that node
+// itself needs. This does override handlers registered through
+// process.on('SIG...', function() { ... }). The `reset_handler` flag indicates
+// whether the signal handler for the given signal should be reset to its
+// default value before executing the handler (i.e. it works like SA_RESETHAND).
+// The `reset_handler` flag is invalid when `signal` is SIGSEGV.
+NODE_EXTERN
+void RegisterSignalHandler(int signal,
+                           void (*handler)(int signal,
+                                           siginfo_t* info,
+                                           void* ucontext),
+                           bool reset_handler = false);
+#endif  // _WIN32
 
 }  // namespace node
 

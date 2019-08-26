@@ -19,7 +19,8 @@
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
 // USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-/* eslint-disable node-core/required-modules, node-core/crypto-check */
+/* eslint-disable node-core/require-common-first, node-core/required-modules */
+/* eslint-disable node-core/crypto-check */
 'use strict';
 const process = global.process;  // Some tests tamper with the process global.
 const path = require('path');
@@ -238,9 +239,6 @@ const pwdCommand = isWindows ?
 
 
 function platformTimeout(ms) {
-  // ESLint will not support 'bigint' in valid-typeof until it reaches stage 4.
-  // See https://github.com/eslint/eslint/pull/9636.
-  // eslint-disable-next-line valid-typeof
   const multipliers = typeof ms === 'bigint' ?
     { two: 2n, four: 4n, seven: 7n } : { two: 2, four: 4, seven: 7 };
 
@@ -403,7 +401,7 @@ function canCreateSymLink() {
                                  'System32', 'whoami.exe');
 
     try {
-      const output = execSync(`${whoamiPath} /priv`, { timout: 1000 });
+      const output = execSync(`${whoamiPath} /priv`, { timeout: 1000 });
       return output.includes('SeCreateSymbolicLinkPrivilege');
     } catch {
       return false;
@@ -527,7 +525,15 @@ let catchWarning;
 function expectWarning(nameOrMap, expected, code) {
   if (catchWarning === undefined) {
     catchWarning = {};
-    process.on('warning', (warning) => catchWarning[warning.name](warning));
+    process.on('warning', (warning) => {
+      if (!catchWarning[warning.name]) {
+        throw new TypeError(
+          `"${warning.name}" was triggered without being expected.\n` +
+          util.inspect(warning)
+        );
+      }
+      catchWarning[warning.name](warning);
+    });
   }
   if (typeof nameOrMap === 'string') {
     catchWarning[nameOrMap] = _expectWarning(nameOrMap, expected, code);
@@ -783,7 +789,7 @@ module.exports = {
   get localhostIPv6() { return '::1'; },
 
   get hasFipsCrypto() {
-    return hasCrypto && require('crypto').fips;
+    return hasCrypto && require('crypto').getFips();
   },
 
   get inFreeBSDJail() {

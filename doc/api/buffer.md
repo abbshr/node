@@ -59,8 +59,8 @@ differently based on what arguments are provided:
   entire `Buffer`. While this behavior is *intentional* to improve performance,
   development experience has demonstrated that a more explicit distinction is
   required between creating a fast-but-uninitialized `Buffer` versus creating a
-  slower-but-safer `Buffer`. Starting in Node.js 8.0.0, `Buffer(num)` and
-  `new Buffer(num)` will return a `Buffer` with initialized memory.
+  slower-but-safer `Buffer`. Since Node.js 8.0.0, `Buffer(num)` and `new
+  Buffer(num)` return a `Buffer` with initialized memory.
 * Passing a string, array, or `Buffer` as the first argument copies the
   passed object's data into the `Buffer`.
 * Passing an [`ArrayBuffer`][] or a [`SharedArrayBuffer`][] returns a `Buffer`
@@ -70,6 +70,19 @@ Because the behavior of `new Buffer()` is different depending on the type of the
 first argument, security and reliability issues can be inadvertently introduced
 into applications when argument validation or `Buffer` initialization is not
 performed.
+
+For example, if an attacker can cause an application to receive a number where
+a string is expected, the application may call `new Buffer(100)`
+instead of `new Buffer("100")`, it will allocate a 100 byte buffer instead
+of allocating a 3 byte buffer with content `"100"`. This is commonly possible
+using JSON API calls. Since JSON distinguishes between numeric and string types,
+it allows injection of numbers where a naive application might expect to always
+receive a string.  Before Node.js 8.0.0, the 100 byte buffer might contain
+arbitrary pre-existing in-memory data, so may be used to expose in-memory
+secrets to a remote attacker.  Since Node.js 8.0.0, exposure of memory cannot
+occur because the data is zero-filled. However, other attacks are still
+possible, such as causing very large buffers to be allocated by the server,
+leading to performance degradation or crashing on memory exhaustion.
 
 To make the creation of `Buffer` instances more reliable and less error-prone,
 the various forms of the `new Buffer()` constructor have been **deprecated**
@@ -92,7 +105,7 @@ to one of these new APIs.*
   initialized `Buffer` of the specified size. This method is slower than
   [`Buffer.allocUnsafe(size)`][`Buffer.allocUnsafe()`] but guarantees that newly
   created `Buffer` instances never contain old data that is potentially
-  sensitive.
+  sensitive. A `TypeError` will be thrown if `size` is not a number.
 * [`Buffer.allocUnsafe(size)`][`Buffer.allocUnsafe()`] and
   [`Buffer.allocUnsafeSlow(size)`][`Buffer.allocUnsafeSlow()`] each return a
   new uninitialized `Buffer` of the specified `size`. Because the `Buffer` is
@@ -111,7 +124,9 @@ added: v5.10.0
 
 Node.js can be started using the `--zero-fill-buffers` command line option to
 cause all newly allocated `Buffer` instances to be zero-filled upon creation by
-default, including buffers returned by `new Buffer(size)`,
+default. Before Node.js 8.0.0, this included buffers allocated by `new
+Buffer(size)`. Since Node.js 8.0.0, buffers allocated with `new` are always
+zero-filled, whether this option is used or not.
 [`Buffer.allocUnsafe()`][], [`Buffer.allocUnsafeSlow()`][], and `new
 SlowBuffer(size)`. Use of this flag can have a significant negative impact on
 performance. Use of the `--zero-fill-buffers` option is recommended only when
@@ -250,7 +265,7 @@ console.log(buf2);
 // Prints: <Buffer 88 13 70 17>
 ```
 
-Note that when creating a `Buffer` using a [`TypedArray`][]'s `.buffer`, it is
+When creating a `Buffer` using a [`TypedArray`][]'s `.buffer`, it is
 possible to use only a portion of the underlying [`ArrayBuffer`][] by passing in
 `byteOffset` and `length` parameters.
 
@@ -597,7 +612,7 @@ console.log(buf);
 
 A `TypeError` will be thrown if `size` is not a number.
 
-Note that the `Buffer` module pre-allocates an internal `Buffer` instance of
+The `Buffer` module pre-allocates an internal `Buffer` instance of
 size [`Buffer.poolSize`][] that is used as a pool for the fast allocation of new
 `Buffer` instances created using [`Buffer.allocUnsafe()`][] and the deprecated
 `new Buffer(size)` constructor only when `size` is less than or equal to
@@ -950,6 +965,20 @@ added: v0.9.1
 
 Returns `true` if `encoding` contains a supported character encoding, or `false`
 otherwise.
+
+```js
+console.log(Buffer.isEncoding('utf-8'));
+// Prints: true
+
+console.log(Buffer.isEncoding('hex'));
+// Prints: true
+
+console.log(Buffer.isEncoding('utf/8'));
+// Prints: false
+
+console.log(Buffer.isEncoding(''));
+// Prints: false
+```
 
 ### Class Property: Buffer.poolSize
 <!-- YAML
@@ -1501,7 +1530,7 @@ added: v0.1.90
 
 * {integer}
 
-Returns the amount of memory allocated for `buf` in bytes. Note that this
+Returns the amount of memory allocated for `buf` in bytes. This
 does not necessarily reflect the amount of "usable" data within `buf`.
 
 ```js
@@ -1896,18 +1925,9 @@ console.log(buf.readUIntBE(1, 6).toString(16));
 // Throws ERR_OUT_OF_RANGE.
 ```
 
-### buf.slice([start[, end]])
+### buf.subarray([start[, end]])
 <!-- YAML
-added: v0.3.0
-changes:
-  - version: v7.1.0, v6.9.2
-    pr-url: https://github.com/nodejs/node/pull/9341
-    description: Coercing the offsets to integers now handles values outside
-                 the 32-bit integer range properly.
-  - version: v7.0.0
-    pr-url: https://github.com/nodejs/node/pull/9101
-    description: All offsets are now coerced to integers before doing any
-                 calculations with them.
+added: v3.0.0
 -->
 
 * `start` {integer} Where the new `Buffer` will start. **Default:** `0`.
@@ -1935,7 +1955,7 @@ for (let i = 0; i < 26; i++) {
   buf1[i] = i + 97;
 }
 
-const buf2 = buf1.slice(0, 3);
+const buf2 = buf1.subarray(0, 3);
 
 console.log(buf2.toString('ascii', 0, buf2.length));
 // Prints: abc
@@ -1952,17 +1972,57 @@ end of `buf` rather than the beginning.
 ```js
 const buf = Buffer.from('buffer');
 
-console.log(buf.slice(-6, -1).toString());
+console.log(buf.subarray(-6, -1).toString());
 // Prints: buffe
-// (Equivalent to buf.slice(0, 5).)
+// (Equivalent to buf.subarray(0, 5).)
 
-console.log(buf.slice(-6, -2).toString());
+console.log(buf.subarray(-6, -2).toString());
 // Prints: buff
-// (Equivalent to buf.slice(0, 4).)
+// (Equivalent to buf.subarray(0, 4).)
 
-console.log(buf.slice(-5, -2).toString());
+console.log(buf.subarray(-5, -2).toString());
 // Prints: uff
-// (Equivalent to buf.slice(1, 4).)
+// (Equivalent to buf.subarray(1, 4).)
+```
+
+### buf.slice([start[, end]])
+<!-- YAML
+added: v0.3.0
+changes:
+  - version: v7.1.0, v6.9.2
+    pr-url: https://github.com/nodejs/node/pull/9341
+    description: Coercing the offsets to integers now handles values outside
+                 the 32-bit integer range properly.
+  - version: v7.0.0
+    pr-url: https://github.com/nodejs/node/pull/9101
+    description: All offsets are now coerced to integers before doing any
+                 calculations with them.
+-->
+
+* `start` {integer} Where the new `Buffer` will start. **Default:** `0`.
+* `end` {integer} Where the new `Buffer` will end (not inclusive).
+  **Default:** [`buf.length`][].
+* Returns: {Buffer}
+
+Returns a new `Buffer` that references the same memory as the original, but
+offset and cropped by the `start` and `end` indices.
+
+This is the same behavior as `buf.subarray()`.
+
+This method is not compatible with the `Uint8Array.prototype.slice()`,
+which is a superclass of `Buffer`. To copy the slice, use
+`Uint8Array.prototype.slice()`.
+
+```js
+const buf = Buffer.from('buffer');
+
+const copiedBuf = Uint8Array.prototype.slice.call(buf);
+copiedBuf[0]++;
+console.log(copiedBuf.toString());
+// Prints: cuffer
+
+console.log(buf.toString());
+// Prints: buffer
 ```
 
 ### buf.swap16()
@@ -2056,7 +2116,7 @@ buf2.swap64();
 // Throws ERR_INVALID_BUFFER_SIZE.
 ```
 
-Note that JavaScript cannot encode 64-bit integers. This method is intended
+JavaScript cannot encode 64-bit integers. This method is intended
 for working with 64-bit floats.
 
 ### buf.toJSON()
@@ -2592,7 +2652,7 @@ Returns the maximum number of bytes that will be returned when
 `buf.inspect()` is called. This can be overridden by user modules. See
 [`util.inspect()`][] for more details on `buf.inspect()` behavior.
 
-Note that this is a property on the `buffer` module returned by
+This is a property on the `buffer` module returned by
 `require('buffer')`, not on the `Buffer` global or a `Buffer` instance.
 
 ## buffer.kMaxLength
@@ -2604,7 +2664,7 @@ added: v3.0.0
 
 An alias for [`buffer.constants.MAX_LENGTH`][].
 
-Note that this is a property on the `buffer` module returned by
+This is a property on the `buffer` module returned by
 `require('buffer')`, not on the `Buffer` global or a `Buffer` instance.
 
 ## buffer.transcode(source, fromEnc, toEnc)
@@ -2644,7 +2704,7 @@ console.log(newBuf.toString('ascii'));
 Because the Euro (`€`) sign is not representable in US-ASCII, it is replaced
 with `?` in the transcoded `Buffer`.
 
-Note that this is a property on the `buffer` module returned by
+This is a property on the `buffer` module returned by
 `require('buffer')`, not on the `Buffer` global or a `Buffer` instance.
 
 ## Class: SlowBuffer
@@ -2722,7 +2782,7 @@ console.log(buf);
 added: v8.2.0
 -->
 
-Note that `buffer.constants` is a property on the `buffer` module returned by
+`buffer.constants` is a property on the `buffer` module returned by
 `require('buffer')`, not on the `Buffer` global or a `Buffer` instance.
 
 ### buffer.constants.MAX_LENGTH

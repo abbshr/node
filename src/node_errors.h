@@ -4,8 +4,8 @@
 #if defined(NODE_WANT_INTERNALS) && NODE_WANT_INTERNALS
 
 #include "node.h"
-#include "util-inl.h"
-#include "env-inl.h"
+#include "util.h"
+#include "env.h"
 #include "v8.h"
 
 // Use ostringstream to print exact-width integer types
@@ -29,21 +29,6 @@ void OnFatalError(const char* location, const char* message);
 
 void PrintErrorString(const char* format, ...);
 
-void ReportException(Environment* env, const v8::TryCatch& try_catch);
-
-void ReportException(Environment* env,
-                     Local<Value> er,
-                     Local<Message> message);
-
-void FatalException(v8::Isolate* isolate,
-                    Local<Value> error,
-                    Local<Message> message);
-
-void FatalException(v8::Isolate* isolate,
-                    Local<Value> error,
-                    Local<Message> message,
-                    bool from_promise);
-
 // Helpers to construct errors similar to the ones provided by
 // lib/internal/errors.js.
 // Example: with `V(ERR_INVALID_ARG_TYPE, TypeError)`, there will be
@@ -54,8 +39,8 @@ void FatalException(v8::Isolate* isolate,
   V(ERR_BUFFER_CONTEXT_NOT_AVAILABLE, Error)                                 \
   V(ERR_BUFFER_OUT_OF_BOUNDS, RangeError)                                    \
   V(ERR_BUFFER_TOO_LARGE, Error)                                             \
-  V(ERR_CANNOT_TRANSFER_OBJECT, TypeError)                                   \
-  V(ERR_CONSTRUCT_CALL_REQUIRED, Error)                                      \
+  V(ERR_CONSTRUCT_CALL_REQUIRED, TypeError)                                  \
+  V(ERR_CONSTRUCT_CALL_INVALID, TypeError)                                   \
   V(ERR_INVALID_ARG_VALUE, TypeError)                                        \
   V(ERR_INVALID_ARG_TYPE, TypeError)                                         \
   V(ERR_INVALID_MODULE_SPECIFIER, TypeError)                                 \
@@ -100,7 +85,7 @@ void FatalException(v8::Isolate* isolate,
 #define PREDEFINED_ERROR_MESSAGES(V)                                         \
   V(ERR_BUFFER_CONTEXT_NOT_AVAILABLE,                                        \
     "Buffer is not available for the current Context")                       \
-  V(ERR_CANNOT_TRANSFER_OBJECT, "Cannot transfer object of unsupported type")\
+  V(ERR_CONSTRUCT_CALL_INVALID, "Constructor cannot be called")              \
   V(ERR_CONSTRUCT_CALL_REQUIRED, "Cannot call constructor without `new`")    \
   V(ERR_INVALID_TRANSFER_OBJECT, "Found invalid object in transferList")     \
   V(ERR_MEMORY_ALLOCATION_FAILED, "Failed to allocate memory")               \
@@ -190,14 +175,24 @@ class TryCatchScope : public v8::TryCatch {
   CatchMode mode_;
 };
 
+// Trigger the global uncaught exception handler `process._fatalException`
+// in JS land (which emits the 'uncaughtException' event). If that returns
+// true, continue program execution, otherwise exit the process.
+void TriggerUncaughtException(v8::Isolate* isolate,
+                              const v8::TryCatch& try_catch);
+void TriggerUncaughtException(v8::Isolate* isolate,
+                              Local<Value> error,
+                              Local<Message> message,
+                              bool from_promise = false);
+
 const char* errno_string(int errorno);
 void PerIsolateMessageListener(v8::Local<v8::Message> message,
                                v8::Local<v8::Value> error);
 
-}  // namespace errors
-
 void DecorateErrorStack(Environment* env,
                         const errors::TryCatchScope& try_catch);
+}  // namespace errors
+
 }  // namespace node
 
 #endif  // defined(NODE_WANT_INTERNALS) && NODE_WANT_INTERNALS

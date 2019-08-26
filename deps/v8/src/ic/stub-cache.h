@@ -6,6 +6,7 @@
 #define V8_IC_STUB_CACHE_H_
 
 #include "src/objects/name.h"
+#include "src/objects/tagged-value.h"
 
 namespace v8 {
 namespace internal {
@@ -28,19 +29,17 @@ class SCTableReference {
   friend class StubCache;
 };
 
-
-class StubCache {
+class V8_EXPORT_PRIVATE StubCache {
  public:
   struct Entry {
-    // The values here have plain Address types because they are read
-    // directly from generated code. As a nice side effect, this keeps
-    // #includes lightweight.
-    Address key;
+    // {key} is a tagged Name pointer, may be cleared by setting to empty
+    // string.
+    StrongTaggedValue key;
     // {value} is a tagged heap object reference (weak or strong), equivalent
     // to a MaybeObject's payload.
-    Address value;
-    // {map} is a tagged Map pointer, or nullptr.
-    Address map;
+    TaggedValue value;
+    // {map} is a tagged Map pointer, may be cleared by setting to Smi::zero().
+    StrongTaggedValue map;
   };
 
   void Initialize();

@@ -34,15 +34,25 @@ void DebugOptions::CheckOptions(std::vector<std::string>* errors) {
   }
 #endif
 
-  if (deprecated_debug && !inspector_enabled) {
+  if (deprecated_debug) {
     errors->push_back("[DEP0062]: `node --debug` and `node --debug-brk` "
-                      "are invalid. Please use `node --inspect` or "
+                      "are invalid. Please use `node --inspect` and "
                       "`node --inspect-brk` instead.");
   }
 
-  if (deprecated_debug && inspector_enabled && break_first_line) {
-    errors->push_back("[DEP0062]: `node --inspect --debug-brk` is deprecated. "
-                      "Please use `node --inspect-brk` instead.");
+  std::vector<std::string> destinations =
+      SplitString(inspect_publish_uid_string, ',');
+  inspect_publish_uid.console = false;
+  inspect_publish_uid.http = false;
+  for (const std::string& destination : destinations) {
+    if (destination == "stderr") {
+      inspect_publish_uid.console = true;
+    } else if (destination == "http") {
+      inspect_publish_uid.http = true;
+    } else {
+      errors->push_back("--inspect-publish-uid destination can be "
+                        "stderr or http");
+    }
   }
 }
 
@@ -106,6 +116,13 @@ void EnvironmentOptions::CheckOptions(std::vector<std::string>* errors) {
   if (!userland_loader.empty() && !experimental_modules) {
     errors->push_back("--loader requires --experimental-modules be enabled");
   }
+  if (has_policy_integrity_string && experimental_policy.empty()) {
+    errors->push_back("--policy-integrity requires "
+                      "--experimental-policy be enabled");
+  }
+  if (has_policy_integrity_string && experimental_policy_integrity.empty()) {
+    errors->push_back("--policy-integrity cannot be empty");
+  }
 
   if (!module_type.empty()) {
     if (!experimental_modules) {
@@ -117,8 +134,8 @@ void EnvironmentOptions::CheckOptions(std::vector<std::string>* errors) {
     }
   }
 
-  if (experimental_json_modules && !experimental_modules) {
-    errors->push_back("--experimental-json-modules requires "
+  if (experimental_wasm_modules && !experimental_modules) {
+    errors->push_back("--experimental-wasm-modules requires "
                       "--experimental-modules be enabled");
   }
 
@@ -161,8 +178,26 @@ void EnvironmentOptions::CheckOptions(std::vector<std::string>* errors) {
     if (!cpu_prof_dir.empty()) {
       errors->push_back("--cpu-prof-dir must be used with --cpu-prof");
     }
+    // We can't catch the case where the value passed is the default value,
+    // then the option just becomes a noop which is fine.
+    if (cpu_prof_interval != kDefaultCpuProfInterval) {
+      errors->push_back("--cpu-prof-interval must be used with --cpu-prof");
+    }
   }
 
+  if (!heap_prof) {
+    if (!heap_prof_name.empty()) {
+      errors->push_back("--heap-prof-name must be used with --heap-prof");
+    }
+    if (!heap_prof_dir.empty()) {
+      errors->push_back("--heap-prof-dir must be used with --heap-prof");
+    }
+    // We can't catch the case where the value passed is the default value,
+    // then the option just becomes a noop which is fine.
+    if (heap_prof_interval != kDefaultHeapProfInterval) {
+      errors->push_back("--heap-prof-interval must be used with --heap-prof");
+    }
+  }
   debug_options_.CheckOptions(errors);
 #endif  // HAVE_INSPECTOR
 }
@@ -198,6 +233,17 @@ class PerProcessOptionsParser : public OptionsParser<PerProcessOptions> {
 #if HAVE_INSPECTOR
 const DebugOptionsParser _dop_instance{};
 const EnvironmentOptionsParser _eop_instance{_dop_instance};
+
+// This Parse is not dead code. It is used by embedders (e.g., Electron).
+template <>
+void Parse(
+  StringVector* const args, StringVector* const exec_args,
+  StringVector* const v8_args,
+  DebugOptions* const options,
+  OptionEnvvarSettings required_env_settings, StringVector* const errors) {
+  _dop_instance.Parse(
+    args, exec_args, v8_args, options, required_env_settings, errors);
+}
 #else
 const EnvironmentOptionsParser _eop_instance{};
 #endif  // HAVE_INSPECTOR
@@ -242,7 +288,9 @@ DebugOptionsParser::DebugOptionsParser() {
   AddAlias("--inspect=", { "--inspect-port", "--inspect" });
 
   AddOption("--debug", "", &DebugOptions::deprecated_debug);
-  AddAlias("--debug=", { "--inspect-port", "--debug" });
+  AddAlias("--debug=", "--debug");
+  AddOption("--debug-brk", "", &DebugOptions::deprecated_debug);
+  AddAlias("--debug-brk=", "--debug-brk");
 
   AddOption("--inspect-brk",
             "activate inspector on host:port and break at start of user script",
@@ -255,25 +303,41 @@ DebugOptionsParser::DebugOptionsParser() {
   Implies("--inspect-brk-node", "--inspect");
   AddAlias("--inspect-brk-node=", { "--inspect-port", "--inspect-brk-node" });
 
-  AddOption("--debug-brk", "", &DebugOptions::break_first_line);
-  Implies("--debug-brk", "--debug");
-  AddAlias("--debug-brk=", { "--inspect-port", "--debug-brk" });
+  AddOption("--inspect-publish-uid",
+            "comma separated list of destinations for inspector uid"
+            "(default: stderr,http)",
+            &DebugOptions::inspect_publish_uid_string,
+            kAllowedInEnvironment);
 }
 
 EnvironmentOptionsParser::EnvironmentOptionsParser() {
-  AddOption("--experimental-json-modules",
-            "experimental JSON interop support for the ES Module loader",
-            &EnvironmentOptions::experimental_json_modules,
+  AddOption("--experimental-exports",
+            "experimental support for exports in package.json",
+            &EnvironmentOptions::experimental_exports,
             kAllowedInEnvironment);
   AddOption("--experimental-modules",
             "experimental ES Module support and caching modules",
             &EnvironmentOptions::experimental_modules,
+            kAllowedInEnvironment);
+  Implies("--experimental-modules", "--experimental-exports");
+  AddOption("--experimental-wasm-modules",
+            "experimental ES Module support for webassembly modules",
+            &EnvironmentOptions::experimental_wasm_modules,
             kAllowedInEnvironment);
   AddOption("--experimental-policy",
             "use the specified file as a "
             "security policy",
             &EnvironmentOptions::experimental_policy,
             kAllowedInEnvironment);
+  AddOption("[has_policy_integrity_string]",
+            "",
+            &EnvironmentOptions::has_policy_integrity_string);
+  AddOption("--policy-integrity",
+            "ensure the security policy contents match "
+            "the specified integrity",
+            &EnvironmentOptions::experimental_policy_integrity,
+            kAllowedInEnvironment);
+  Implies("--policy-integrity", "[has_policy_integrity_string]");
   AddOption("--experimental-repl-await",
             "experimental await keyword support in REPL",
             &EnvironmentOptions::experimental_repl_await,
@@ -356,10 +420,32 @@ EnvironmentOptionsParser::EnvironmentOptionsParser() {
             "specified file name of the V8 CPU profile generated with "
             "--cpu-prof",
             &EnvironmentOptions::cpu_prof_name);
+  AddOption("--cpu-prof-interval",
+            "specified sampling interval in microseconds for the V8 CPU "
+            "profile generated with --cpu-prof. (default: 1000)",
+            &EnvironmentOptions::cpu_prof_interval);
   AddOption("--cpu-prof-dir",
             "Directory where the V8 profiles generated by --cpu-prof will be "
             "placed. Does not affect --prof.",
             &EnvironmentOptions::cpu_prof_dir);
+  AddOption(
+      "--heap-prof",
+      "Start the V8 heap profiler on start up, and write the heap profile "
+      "to disk before exit. If --heap-prof-dir is not specified, write "
+      "the profile to the current working directory.",
+      &EnvironmentOptions::heap_prof);
+  AddOption("--heap-prof-name",
+            "specified file name of the V8 CPU profile generated with "
+            "--heap-prof",
+            &EnvironmentOptions::heap_prof_name);
+  AddOption("--heap-prof-dir",
+            "Directory where the V8 heap profiles generated by --heap-prof "
+            "will be placed.",
+            &EnvironmentOptions::heap_prof_dir);
+  AddOption("--heap-prof-interval",
+            "specified sampling interval in bytes for the V8 heap "
+            "profile generated with --heap-prof. (default: 512 * 1024)",
+            &EnvironmentOptions::heap_prof_interval);
 #endif  // HAVE_INSPECTOR
   AddOption("--redirect-warnings",
             "write warnings to file instead of stderr",
@@ -461,6 +547,10 @@ PerIsolateOptionsParser::PerIsolateOptionsParser(
             "track heap object allocations for heap snapshots",
             &PerIsolateOptions::track_heap_objects,
             kAllowedInEnvironment);
+  AddOption("--no-node-snapshot",
+            "",  // It's a debug-only option.
+            &PerIsolateOptions::no_node_snapshot,
+            kAllowedInEnvironment);
 
   // Explicitly add some V8 flags to mark them as allowed in NODE_OPTIONS.
   AddOption("--abort-on-uncaught-exception",
@@ -550,7 +640,12 @@ PerProcessOptionsParser::PerProcessOptionsParser(
             &PerProcessOptions::debug_arraybuffer_allocations,
             kAllowedInEnvironment);
 
-  AddOption("--security-reverts", "", &PerProcessOptions::security_reverts);
+
+  // 12.x renamed this inadvertently, so alias it for consistency within the
+  // release line, while using the original name for consistency with older
+  // release lines.
+  AddOption("--security-revert", "", &PerProcessOptions::security_reverts);
+  AddAlias("--security-reverts", "--security-revert");
   AddOption("--completion-bash",
             "print source-able bash completion script",
             &PerProcessOptions::print_bash_completion);

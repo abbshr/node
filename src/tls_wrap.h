@@ -160,6 +160,8 @@ class TLSWrap : public AsyncWrap,
   static void SetVerifyMode(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void EnableSessionCallbacks(
       const v8::FunctionCallbackInfo<v8::Value>& args);
+  static void EnableKeylogCallback(
+      const v8::FunctionCallbackInfo<v8::Value>& args);
   static void EnableTrace(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void EnableCertCb(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void DestroySSL(const v8::FunctionCallbackInfo<v8::Value>& args);
@@ -172,7 +174,7 @@ class TLSWrap : public AsyncWrap,
   BIO* enc_in_ = nullptr;   // StreamListener fills this for SSL_read().
   BIO* enc_out_ = nullptr;  // SSL_write()/handshake fills this for EncOut().
   // Waiting for ClearIn() to pass to SSL_write().
-  std::vector<uv_buf_t> pending_cleartext_input_;
+  AllocatedBuffer pending_cleartext_input_;
   size_t write_size_ = 0;
   WriteWrap* current_write_ = nullptr;
   bool in_dowrite_ = false;
@@ -191,6 +193,8 @@ class TLSWrap : public AsyncWrap,
  private:
   static void GetWriteQueueSize(
       const v8::FunctionCallbackInfo<v8::Value>& info);
+
+  crypto::BIOPointer bio_trace_;
 };
 
 }  // namespace node

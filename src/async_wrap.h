@@ -111,7 +111,7 @@ class AsyncWrap : public BaseObject {
             ProviderType provider,
             double execution_async_id = kInvalidAsyncId);
 
-  // This constructor creates a reuseable instance where user is responsible
+  // This constructor creates a reusable instance where user is responsible
   // to call set_provider_type() and AsyncReset() before use.
   AsyncWrap(Environment* env, v8::Local<v8::Object> object);
 
@@ -133,6 +133,7 @@ class AsyncWrap : public BaseObject {
   static void PushAsyncIds(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void PopAsyncIds(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void AsyncReset(const v8::FunctionCallbackInfo<v8::Value>& args);
+  static void GetProviderType(const v8::FunctionCallbackInfo<v8::Value>& args);
   static void QueueDestroyAsyncId(
     const v8::FunctionCallbackInfo<v8::Value>& args);
 
@@ -153,7 +154,7 @@ class AsyncWrap : public BaseObject {
   static void EmitTraceEventAfter(ProviderType type, double async_id);
   void EmitTraceEventDestroy();
 
-  static void DestroyAsyncIdsCallback(Environment* env, void* data);
+  static void DestroyAsyncIdsCallback(Environment* env);
 
   inline ProviderType provider_type() const;
   inline ProviderType set_provider_type(ProviderType provider);
@@ -209,6 +210,8 @@ class AsyncWrap : public BaseObject {
     AsyncWrap* wrap_ = nullptr;
   };
 
+  bool IsDoneInitializing() const override;
+
  private:
   friend class PromiseWrap;
 
@@ -217,7 +220,8 @@ class AsyncWrap : public BaseObject {
             ProviderType provider,
             double execution_async_id,
             bool silent);
-  ProviderType provider_type_;
+  ProviderType provider_type_ = PROVIDER_NONE;
+  bool init_hook_ran_ = false;
   // Because the values may be Reset(), cannot be made const.
   double async_id_ = kInvalidAsyncId;
   double trigger_async_id_;

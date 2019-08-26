@@ -1,6 +1,7 @@
 #include "stream_pipe.h"
 #include "stream_base-inl.h"
 #include "node_buffer.h"
+#include "util-inl.h"
 
 using v8::Context;
 using v8::Function;
@@ -70,18 +71,16 @@ void StreamPipe::Unpipe() {
   // Delay the JS-facing part with SetImmediate, because this might be from
   // inside the garbage collector, so we can’t run JS here.
   HandleScope handle_scope(env()->isolate());
-  env()->SetImmediate([](Environment* env, void* data) {
-    StreamPipe* pipe = static_cast<StreamPipe*>(data);
-
+  env()->SetImmediate([this](Environment* env) {
     HandleScope handle_scope(env->isolate());
     Context::Scope context_scope(env->context());
-    Local<Object> object = pipe->object();
+    Local<Object> object = this->object();
 
     Local<Value> onunpipe;
     if (!object->Get(env->context(), env->onunpipe_string()).ToLocal(&onunpipe))
       return;
     if (onunpipe->IsFunction() &&
-        pipe->MakeCallback(onunpipe.As<Function>(), 0, nullptr).IsEmpty()) {
+        MakeCallback(onunpipe.As<Function>(), 0, nullptr).IsEmpty()) {
       return;
     }
 
@@ -106,7 +105,7 @@ void StreamPipe::Unpipe() {
             .IsNothing()) {
       return;
     }
-  }, static_cast<void*>(this), object());
+  }, object());
 }
 
 uv_buf_t StreamPipe::ReadableListener::OnStreamAlloc(size_t suggested_size) {

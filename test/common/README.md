@@ -8,6 +8,7 @@ This directory contains modules used to test the Node.js implementation.
 * [Benchmark module](#benchmark-module)
 * [Common module API](#common-module-api)
 * [Countdown module](#countdown-module)
+* [CPU Profiler module](#cpu-profiler-module)
 * [DNS module](#dns-module)
 * [Duplex pair helper](#duplex-pair-helper)
 * [Environment variables](#environment-variables)
@@ -193,7 +194,12 @@ Indicates whether OpenSSL is available.
 ### hasFipsCrypto
 * [&lt;boolean>]
 
-Indicates `hasCrypto` and `crypto` with fips.
+Indicates that Node.js has been linked with a FIPS compatible OpenSSL library,
+and that FIPS as been enabled using `--enable-fips`.
+
+To only detect if the OpenSSL library is FIPS compatible, regardless if it has
+been enabled or not, then `process.config.variables.openssl_is_fips` can be
+used to determine that situation.
 
 ### hasIntl
 * [&lt;boolean>]
@@ -386,7 +392,7 @@ thread.
 The `ArrayStream` module provides a simple `Stream` that pushes elements from
 a given array.
 
-<!-- eslint-disable no-undef, node-core/required-modules -->
+<!-- eslint-disable no-undef, node-core/require-common-first, node-core/required-modules -->
 ```js
 const ArrayStream = require('../common/arraystream');
 const stream = new ArrayStream();
@@ -402,7 +408,7 @@ require a particular action to be taken after a given number of completed
 tasks (for instance, shutting down an HTTP server after a specific number of
 requests). The Countdown will fail the test if the remainder did not reach 0.
 
-<!-- eslint-disable strict, node-core/required-modules -->
+<!-- eslint-disable strict, node-core/require-common-first, node-core/required-modules -->
 ```js
 const Countdown = require('../common/countdown');
 
@@ -430,6 +436,45 @@ Decrements the `Countdown` counter.
 
 Specifies the remaining number of times `Countdown.prototype.dec()` must be
 called before the callback is invoked.
+
+## CPU Profiler module
+
+The `cpu-prof` module provides utilities related to CPU profiling tests.
+
+### env
+
+* Default: { ...process.env, NODE_DEBUG_NATIVE: 'INSPECTOR_PROFILER' }
+
+Environment variables used in profiled processes.
+
+### getCpuProfiles(dir)
+
+* `dir` {string} The directory containing the CPU profile files.
+* return [&lt;string>]
+
+Returns an array of all `.cpuprofile` files found in `dir`.
+
+### getFrames(file, suffix)
+
+* `file` {string} Path to a `.cpuprofile` file.
+* `suffix` {string} Suffix of the URL of call frames to retrieve.
+* returns { frames: [&lt;Object>], nodes: [&lt;Object>] }
+
+Returns an object containing an array of the relevant call frames and an array
+of all the profile nodes.
+
+### kCpuProfInterval
+
+Sampling interval in microseconds.
+
+### verifyFrames(output, file, suffix)
+
+* `output` {string}
+* `file` {string}
+* `suffix` {string}
+
+Throws an `AssertionError` if there are no call frames with the expected
+`suffix` in the profiling data contained in `file`.
 
 ## DNS Module
 
@@ -574,7 +619,7 @@ one listed below. (`heap.validateSnapshotNodes(...)` is a shortcut for
 
 Create a heap dump and an embedder graph copy and validate occurrences.
 
-<!-- eslint-disable no-undef, node-core/required-modules -->
+<!-- eslint-disable no-undef, node-core/require-common-first, node-core/required-modules -->
 ```js
 validateSnapshotNodes('TLSWRAP', [
   {
@@ -592,7 +637,7 @@ validateSnapshotNodes('TLSWRAP', [
 The `hijackstdio` module provides utility functions for temporarily redirecting
 `stdout` and `stderr` output.
 
-<!-- eslint-disable no-undef, node-core/required-modules -->
+<!-- eslint-disable no-undef, node-core/require-common-first, node-core/required-modules -->
 ```js
 const { hijackStdout, restoreStdout } = require('../common/hijackstdio');
 
@@ -638,7 +683,7 @@ original state after calling [`hijackstdio.hijackStdOut()`][].
 The http2.js module provides a handful of utilities for creating mock HTTP/2
 frames for testing of HTTP/2 endpoints
 
-<!-- eslint-disable no-unused-vars, node-core/required-modules -->
+<!-- eslint-disable no-unused-vars, node-core/require-common-first, node-core/required-modules -->
 ```js
 const http2 = require('../common/http2');
 ```
@@ -648,7 +693,7 @@ const http2 = require('../common/http2');
 The `http2.Frame` is a base class that creates a `Buffer` containing a
 serialized HTTP/2 frame header.
 
-<!-- eslint-disable no-undef, node-core/required-modules -->
+<!-- eslint-disable no-undef, node-core/require-common-first, node-core/required-modules -->
 ```js
 // length is a 24-bit unsigned integer
 // type is an 8-bit unsigned integer identifying the frame type
@@ -667,7 +712,7 @@ The serialized `Buffer` may be retrieved using the `frame.data` property.
 The `http2.DataFrame` is a subclass of `http2.Frame` that serializes a `DATA`
 frame.
 
-<!-- eslint-disable no-undef, node-core/required-modules -->
+<!-- eslint-disable no-undef, node-core/require-common-first, node-core/required-modules -->
 ```js
 // id is the 32-bit stream identifier
 // payload is a Buffer containing the DATA payload
@@ -684,7 +729,7 @@ socket.write(frame.data);
 The `http2.HeadersFrame` is a subclass of `http2.Frame` that serializes a
 `HEADERS` frame.
 
-<!-- eslint-disable no-undef, node-core/required-modules -->
+<!-- eslint-disable no-undef, node-core/require-common-first, node-core/required-modules -->
 ```js
 // id is the 32-bit stream identifier
 // payload is a Buffer containing the HEADERS payload (see either
@@ -702,7 +747,7 @@ socket.write(frame.data);
 The `http2.SettingsFrame` is a subclass of `http2.Frame` that serializes an
 empty `SETTINGS` frame.
 
-<!-- eslint-disable no-undef, node-core/required-modules -->
+<!-- eslint-disable no-undef, node-core/require-common-first, node-core/required-modules -->
 ```js
 // ack is a boolean indicating whether or not to set the ACK flag.
 const frame = new http2.SettingsFrame(ack);
@@ -715,7 +760,7 @@ socket.write(frame.data);
 Set to a `Buffer` instance that contains a minimal set of serialized HTTP/2
 request headers to be used as the payload of a `http2.HeadersFrame`.
 
-<!-- eslint-disable no-undef, node-core/required-modules -->
+<!-- eslint-disable no-undef, node-core/require-common-first, node-core/required-modules -->
 ```js
 const frame = new http2.HeadersFrame(1, http2.kFakeRequestHeaders, 0, true);
 
@@ -727,7 +772,7 @@ socket.write(frame.data);
 Set to a `Buffer` instance that contains a minimal set of serialized HTTP/2
 response headers to be used as the payload a `http2.HeadersFrame`.
 
-<!-- eslint-disable no-undef, node-core/required-modules -->
+<!-- eslint-disable no-undef, node-core/require-common-first, node-core/required-modules -->
 ```js
 const frame = new http2.HeadersFrame(1, http2.kFakeResponseHeaders, 0, true);
 
@@ -739,7 +784,7 @@ socket.write(frame.data);
 Set to a `Buffer` containing the preamble bytes an HTTP/2 client must send
 upon initial establishment of a connection.
 
-<!-- eslint-disable no-undef, node-core/required-modules -->
+<!-- eslint-disable no-undef, node-core/require-common-first, node-core/required-modules -->
 ```js
 socket.write(http2.kClientMagic);
 ```
@@ -819,19 +864,20 @@ functionality.
 Returns an array of diagnotic report file names found in `dir`. The files should
 have been generated by a process whose PID matches `pid`.
 
-### validate(report)
+### validate(filepath)
 
-* `report` [&lt;string>] Diagnostic report file name to validate.
+* `filepath` [&lt;string>] Diagnostic report filepath to validate.
 
 Validates the schema of a diagnostic report file whose path is specified in
-`report`. If the report fails validation, an exception is thrown.
+`filepath`. If the report fails validation, an exception is thrown.
 
-### validateContent(data)
+### validateContent(report)
 
-* `data` [&lt;string>] Contents of a diagnostic report file.
+* `report` [&lt;Object|string>] JSON contents of a diagnostic report file, the
+parsed Object thereof, or the result of `process.report.getReport()`.
 
 Validates the schema of a diagnostic report whose content is specified in
-`data`. If the report fails validation, an exception is thrown.
+`report`. If the report fails validation, an exception is thrown.
 
 ## tick Module
 
@@ -852,9 +898,20 @@ The `tmpdir` module supports the use of a temporary directory for testing.
 
 The realpath of the testing temporary directory.
 
-### refresh()
+### refresh([opts])
+
+* `opts` [&lt;Object>] (optional) Extra options.
+  * `spawn` [&lt;boolean>] (default: `true`) Indicates that `refresh` is allowed
+    to optionally spawn a subprocess.
 
 Deletes and recreates the testing temporary directory.
+
+The first time `refresh()` runs,  it adds a listener to process `'exit'` that
+cleans the temporary directory. Thus, every file under `tmpdir.path` needs to
+be closed before the test completes. A good way to do this is to add a
+listener to process `'beforeExit'`. If a file needs to be left open until
+Node.js completes, use a child process and call `refresh()` only in the
+parent.
 
 ## WPT Module
 

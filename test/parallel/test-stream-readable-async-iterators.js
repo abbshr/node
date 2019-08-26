@@ -1,7 +1,7 @@
 'use strict';
 
 const common = require('../common');
-const { Readable, PassThrough, pipeline } = require('stream');
+const { Readable, Transform, PassThrough, pipeline } = require('stream');
 const assert = require('assert');
 
 async function tests() {
@@ -397,6 +397,30 @@ async function tests() {
   }
 
   {
+    console.log('readable side of a transform stream pushes null');
+    const transform = new Transform({
+      objectMode: true,
+      transform: (chunk, enc, cb) => { cb(null, chunk); }
+    });
+    transform.push(0);
+    transform.push(1);
+    process.nextTick(() => {
+      transform.push(null);
+    });
+
+    const mustReach = [ common.mustCall(), common.mustCall() ];
+
+    const iter = transform[Symbol.asyncIterator]();
+    assert.strictEqual((await iter.next()).value, 0);
+
+    for await (const d of iter) {
+      assert.strictEqual(d, 1);
+      mustReach[0]();
+    }
+    mustReach[1]();
+  }
+
+  {
     console.log('all next promises must be resolved on end');
     const r = new Readable({
       objectMode: true,
@@ -460,6 +484,47 @@ async function tests() {
       assert.strictEqual(e, err);
     })()]);
   }
+}
+
+{
+  // AsyncIterator return should end even when destroy
+  // does not implement the callback API.
+
+  const r = new Readable({
+    objectMode: true,
+    read() {
+    }
+  });
+
+  const originalDestroy = r.destroy;
+  r.destroy = (err) => {
+    originalDestroy.call(r, err);
+  };
+  const it = r[Symbol.asyncIterator]();
+  const p = it.return();
+  r.push(null);
+  p.then(common.mustCall());
+}
+
+
+{
+  // AsyncIterator return should not error with
+  // premature close.
+
+  const r = new Readable({
+    objectMode: true,
+    read() {
+    }
+  });
+
+  const originalDestroy = r.destroy;
+  r.destroy = (err) => {
+    originalDestroy.call(r, err);
+  };
+  const it = r[Symbol.asyncIterator]();
+  const p = it.return();
+  r.emit('close');
+  p.then(common.mustCall()).catch(common.mustNotCall());
 }
 
 // To avoid missing some tests if a promise does not resolve

@@ -34,7 +34,13 @@ class V8ProfilerConnection {
   virtual ~V8ProfilerConnection() = default;
 
   Environment* env() const { return env_; }
-  void DispatchMessage(v8::Local<v8::String> message);
+
+  // Dispatch a protocol message, and returns the id of the message.
+  // `method` does not need to be surrounded by quotes.
+  // The optional `params` should be formatted in JSON.
+  // The strings should be in one byte characters - which is enough for
+  // the commands we use here.
+  size_t DispatchMessage(const char* method, const char* params = nullptr);
 
   // Use DispatchMessage() to dispatch necessary inspector messages
   // to start and end the profiling.
@@ -55,9 +61,11 @@ class V8ProfilerConnection {
       v8::Local<v8::Object> result) = 0;
 
  private:
+  size_t next_id() { return id_++; }
   void WriteProfile(v8::Local<v8::String> message);
   std::unique_ptr<inspector::InspectorSession> session_;
   Environment* env_ = nullptr;
+  size_t id_ = 1;
 };
 
 class V8CoverageConnection : public V8ProfilerConnection {
@@ -67,7 +75,7 @@ class V8CoverageConnection : public V8ProfilerConnection {
   void Start() override;
   void End() override;
 
-  const char* type() const override { return type_.c_str(); }
+  const char* type() const override { return "coverage"; }
   bool ending() const override { return ending_; }
 
   std::string GetDirectory() const override;
@@ -77,7 +85,6 @@ class V8CoverageConnection : public V8ProfilerConnection {
  private:
   std::unique_ptr<inspector::InspectorSession> session_;
   bool ending_ = false;
-  std::string type_ = "coverage";
 };
 
 class V8CpuProfilerConnection : public V8ProfilerConnection {
@@ -88,7 +95,7 @@ class V8CpuProfilerConnection : public V8ProfilerConnection {
   void Start() override;
   void End() override;
 
-  const char* type() const override { return type_.c_str(); }
+  const char* type() const override { return "CPU"; }
   bool ending() const override { return ending_; }
 
   std::string GetDirectory() const override;
@@ -98,7 +105,26 @@ class V8CpuProfilerConnection : public V8ProfilerConnection {
  private:
   std::unique_ptr<inspector::InspectorSession> session_;
   bool ending_ = false;
-  std::string type_ = "CPU";
+};
+
+class V8HeapProfilerConnection : public V8ProfilerConnection {
+ public:
+  explicit V8HeapProfilerConnection(Environment* env)
+      : V8ProfilerConnection(env) {}
+
+  void Start() override;
+  void End() override;
+
+  const char* type() const override { return "heap"; }
+  bool ending() const override { return ending_; }
+
+  std::string GetDirectory() const override;
+  std::string GetFilename() const override;
+  v8::MaybeLocal<v8::Object> GetProfile(v8::Local<v8::Object> result) override;
+
+ private:
+  std::unique_ptr<inspector::InspectorSession> session_;
+  bool ending_ = false;
 };
 
 }  // namespace profiler

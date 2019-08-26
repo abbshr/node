@@ -4,16 +4,16 @@
 
 #include <limits>
 
-#include "src/v8.h"
+#include "src/init/v8.h"
 
 #include "src/ast/scopes.h"
-#include "src/hash-seed-inl.h"
 #include "src/interpreter/bytecode-array-builder.h"
 #include "src/interpreter/bytecode-array-iterator.h"
 #include "src/interpreter/bytecode-jump-table.h"
 #include "src/interpreter/bytecode-label.h"
 #include "src/interpreter/bytecode-register-allocator.h"
-#include "src/objects-inl.h"
+#include "src/numbers/hash-seed-inl.h"
+#include "src/objects/objects-inl.h"
 #include "src/objects/smi.h"
 #include "test/unittests/interpreter/bytecode-utils.h"
 #include "test/unittests/test-utils.h"
@@ -169,7 +169,7 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
       .LoadLookupGlobalSlot(name, TypeofMode::INSIDE_TYPEOF, 1, 0);
 
   // Emit closure operations.
-  builder.CreateClosure(0, 1, NOT_TENURED);
+  builder.CreateClosure(0, 1, static_cast<int>(AllocationType::kYoung));
 
   // Emit create context operation.
   builder.CreateBlockContext(&scope);
@@ -377,7 +377,7 @@ TEST_F(BytecodeArrayBuilderTest, AllBytecodesGenerated) {
                        LookupHoistingMode::kNormal);
 
   // CreateClosureWide
-  builder.CreateClosure(1000, 321, NOT_TENURED);
+  builder.CreateClosure(1000, 321, static_cast<int>(AllocationType::kYoung));
 
   // Emit wide variant of literal creation operations.
   builder
@@ -560,7 +560,7 @@ TEST_F(BytecodeArrayBuilderTest, Constants) {
   ast_factory.Internalize(isolate());
   Handle<BytecodeArray> array = builder.ToBytecodeArray(isolate());
   // Should only have one entry for each identical constant.
-  EXPECT_EQ(4, array->constant_pool()->length());
+  EXPECT_EQ(4, array->constant_pool().length());
 }
 
 TEST_F(BytecodeArrayBuilderTest, ForwardJumps) {
@@ -650,7 +650,7 @@ TEST_F(BytecodeArrayBuilderTest, ForwardJumps) {
   iterator.Advance();
 
   CHECK_EQ(iterator.current_bytecode(), Bytecode::kJumpConstant);
-  CHECK_EQ(iterator.GetConstantForIndexOperand(0),
+  CHECK_EQ(*(iterator.GetConstantForIndexOperand(0, isolate())),
            Smi::FromInt(kFarJumpDistance));
   iterator.Advance();
 
@@ -658,7 +658,7 @@ TEST_F(BytecodeArrayBuilderTest, ForwardJumps) {
   iterator.Advance();
 
   CHECK_EQ(iterator.current_bytecode(), Bytecode::kJumpIfTrueConstant);
-  CHECK_EQ(iterator.GetConstantForIndexOperand(0),
+  CHECK_EQ(*(iterator.GetConstantForIndexOperand(0, isolate())),
            Smi::FromInt(kFarJumpDistance - 5));
   iterator.Advance();
 
@@ -666,7 +666,7 @@ TEST_F(BytecodeArrayBuilderTest, ForwardJumps) {
   iterator.Advance();
 
   CHECK_EQ(iterator.current_bytecode(), Bytecode::kJumpIfFalseConstant);
-  CHECK_EQ(iterator.GetConstantForIndexOperand(0),
+  CHECK_EQ(*(iterator.GetConstantForIndexOperand(0, isolate())),
            Smi::FromInt(kFarJumpDistance - 10));
   iterator.Advance();
 
@@ -674,7 +674,7 @@ TEST_F(BytecodeArrayBuilderTest, ForwardJumps) {
   iterator.Advance();
 
   CHECK_EQ(iterator.current_bytecode(), Bytecode::kJumpIfToBooleanTrueConstant);
-  CHECK_EQ(iterator.GetConstantForIndexOperand(0),
+  CHECK_EQ(*(iterator.GetConstantForIndexOperand(0, isolate())),
            Smi::FromInt(kFarJumpDistance - 15));
   iterator.Advance();
 
@@ -683,7 +683,7 @@ TEST_F(BytecodeArrayBuilderTest, ForwardJumps) {
 
   CHECK_EQ(iterator.current_bytecode(),
            Bytecode::kJumpIfToBooleanFalseConstant);
-  CHECK_EQ(iterator.GetConstantForIndexOperand(0),
+  CHECK_EQ(*(iterator.GetConstantForIndexOperand(0, isolate())),
            Smi::FromInt(kFarJumpDistance - 20));
   iterator.Advance();
 }
